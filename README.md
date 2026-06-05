@@ -1,217 +1,333 @@
 # LLM-Based Threat Intelligence Gathering
 
-Educational OSINT threat-intelligence pipeline for a penetration testing capstone project.
+An educational Cyber Threat Intelligence (CTI) platform that collects, enriches, analyzes, and visualizes threat intelligence from public OSINT sources. The system supports automated threat monitoring, intelligence prioritization, knowledge graph construction, and analyst-oriented reporting.
 
-The project collects public cybersecurity content, cleans and normalizes it, extracts security entities, stores relationships for graph-style analysis, and generates analyst-oriented reports with source evidence.
+---
 
-## Current MVP
+## Overview
 
-- RSS collection for security news and CERT/advisory sources (including NCSC UK and NCSC NL)
-- CISA KEV JSON collection
-- Reddit public-community collection through OAuth, with educational fallback samples
-- Optional X recent-search collection through the official X API, with educational fallback samples
-- PhishTank verified-online phishing feed collection
-- Optional AlienVault OTX pulse collection through the official OTX API, with educational fallback samples
-- URLhaus malware URL feed collection, with educational fallback samples
-- ThreatFox IOC feed collection, with educational fallback samples
-- GitHub Security Advisories collection, with educational fallback samples
-- FIRST EPSS CVE enrichment, with educational fallback samples
-- Text cleaning and deduplication helpers
-- Regex-based extraction for CVEs, IPs, domains, URLs, hashes, and MITRE ATT&CK technique IDs
-- OSINT coverage scoring for source mix, reliability, linguistic diversity, and collection gaps
-- SQLite storage for documents, entities, and relationships
-- CLI commands for collection, extraction, and report generation
-- React analyst command center
-- Streamlit backup dashboard
-- Neo4j Docker service prepared for the knowledge graph phase
+The project was developed as a penetration testing and cybersecurity capstone project. It demonstrates how publicly available threat intelligence can be collected, normalized, enriched, and transformed into actionable intelligence for defensive security operations.
 
-## Quick Start
+The platform integrates multiple threat intelligence sources, extracts security-related entities, correlates findings, and provides an analyst dashboard for monitoring emerging threats.
 
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-python -m cti_pipeline.cli init-db
-python -m cti_pipeline.cli collect --source cisa_kev
-python -m cti_pipeline.cli collect --source reddit
-python -m cti_pipeline.cli collect --source rss  # optional live RSS sources
-python -m cti_pipeline.cli extract
-python -m cti_pipeline.cli enrich
-python -m cti_pipeline.cli trends --days 3650
-python -m cti_pipeline.cli prioritize --days 3650
-python -m cti_pipeline.cli export-pack --days 3650
-python -m cti_pipeline.cli report --days 3650
-streamlit run dashboard/app.py
+---
+
+## Key Features
+
+### Data Collection
+
+The platform collects threat intelligence from public sources including:
+
+- RSS security news feeds
+- CISA Known Exploited Vulnerabilities (KEV)
+- Reddit cybersecurity communities
+- X (Twitter) public search API
+- PhishTank phishing feeds
+- AlienVault OTX threat intelligence feeds
+- URLhaus malware URL feeds
+- ThreatFox IOC feeds
+- GitHub Security Advisories
+- FIRST EPSS enrichment service
+
+Fallback datasets are provided for educational demonstrations when live APIs are unavailable.
+
+### Threat Intelligence Processing
+
+The platform performs:
+
+- Data cleaning and normalization
+- Duplicate detection and removal
+- Entity extraction
+- IOC extraction
+- Threat enrichment
+- Trend analysis
+- Threat prioritization
+- Evidence-based reporting
+
+Supported extracted entities include:
+
+- CVEs
+- IP addresses
+- Domains
+- URLs
+- File hashes
+- MITRE ATT&CK technique IDs
+
+### Storage and Analysis
+
+The system supports:
+
+- SQLite intelligence storage
+- Relationship tracking
+- Knowledge graph preparation
+- Neo4j integration
+- OSINT coverage scoring
+- Reliability assessment
+- Threat prioritization
+
+### Analyst Interfaces
+
+#### React Command Center
+
+Features include:
+
+- Mission Control dashboard
+- Priority Queue
+- Threat trend visualization
+- OSINT coverage metrics
+- Knowledge graph exploration
+- Intelligence report review
+
+#### Streamlit Dashboard
+
+A lightweight backup dashboard for demonstrations and development purposes.
+
+---
+
+## Project Architecture
+
+```text
+Public Sources
+      │
+      ▼
+ Collection Layer
+      │
+      ▼
+ Normalization Layer
+      │
+      ▼
+ Entity Extraction
+      │
+      ▼
+ Threat Enrichment
+      │
+      ▼
+ Analysis & Prioritization
+      │
+      ▼
+ SQLite / Neo4j Storage
+      │
+      ▼
+ Analyst Dashboard & Reports
 ```
 
-React command center:
-
-```bash
-python -m cti_pipeline.cli run-pipeline --source all --days 3650 --fresh --live-only --enrich-limit 8
-python -m uvicorn cti_pipeline.api.main:app --host 127.0.0.1 --port 8000 --reload
-cd frontend
-npm install
-npm run dev
-```
-
-Open `http://127.0.0.1:5173`.
-
-One-command demo refresh:
-
-```bash
-python -m cti_pipeline.cli run-pipeline --source all --days 3650 --fresh --live-only --enrich-limit 8
-```
-
-Or use:
-
-```bash
-bash scripts/demo_run.sh
-bash scripts/demo_full.sh
-```
-
-Optional graph services:
-
-```bash
-docker compose up -d neo4j
-python -m cti_pipeline.cli sync-neo4j
-```
-
-Neo4j browser will be available at `http://localhost:7474` with username `neo4j` and password `capstonepassword`.
-
-## Reddit OAuth
-
-For live Reddit collection, create a Reddit app and set:
-
-```bash
-export REDDIT_CLIENT_ID=...
-export REDDIT_CLIENT_SECRET=...
-export REDDIT_USER_AGENT="pentest-capstone-cti-pipeline/0.1 by your_username"
-```
-
-If these variables are missing, the collector uses `data/sample_reddit_security.json` so demos and tests still work offline.
-Use `--live-only` for presentation runs to disable this fallback and collect Reddit through OAuth or public subreddit JSON.
-
-## X API Collection
-
-X collection uses the official X API v2 recent-search endpoint. Set a bearer token before running the pipeline:
-
-```bash
-export X_BEARER_TOKEN=...
-python -m cti_pipeline.cli collect --source x --live-only
-```
-
-If `X_BEARER_TOKEN` is missing, normal demo runs use `data/sample_x_security.json`; `--live-only` disables that fallback and safely skips X when credentials are unavailable.
-
-## PhishTank and OTX Feeds
-
-PhishTank uses the official verified-online phishing database. For repeated automated use, set an app key:
-
-```bash
-export PHISHTANK_APP_KEY=...
-python -m cti_pipeline.cli collect --source phishtank --live-only
-```
-
-AlienVault OTX uses the official OTX API and requires an API key:
-
-```bash
-export OTX_API_KEY=...
-python -m cti_pipeline.cli collect --source otx --live-only
-```
-
-Normal demo runs use `data/sample_phishtank.json` and `data/sample_otx_pulses.json` if live access fails or credentials are unavailable. `--live-only` disables those fallbacks.
-
-## URLhaus and ThreatFox Collection
-
-URLhaus and ThreatFox collect recent malware distribution URLs and IOCs. To run live queries, set your abuse.ch API authentication key:
-
-```bash
-export ABUSECH_AUTH_KEY=...
-# Or service-specific variables:
-# export URLHAUS_AUTH_KEY=...
-# export THREATFOX_AUTH_KEY=...
-
-python -m cti_pipeline.cli collect --source urlhaus --live-only
-python -m cti_pipeline.cli collect --source threatfox --live-only
-```
-
-If these keys are missing, the collectors fall back to `data/sample_urlhaus.json` and `data/sample_threatfox.json`.
-
-## GitHub Security Advisories
-
-GitHub Advisories collects reviewed vulnerabilities and packages. For higher rate limits, set your GitHub personal access token:
-
-```bash
-export GITHUB_TOKEN=...
-python -m cti_pipeline.cli collect --source github_advisories --live-only
-```
-
-If no token is supplied, unauthenticated public access is used or it falls back to `data/sample_github_advisories.json`.
-
-## FIRST EPSS Enrichment
-
-The FIRST EPSS service enriches CVE entities with Exploit Prediction Scoring System scores and percentiles. It queries CVEs in batches:
-
-```bash
-python -m cti_pipeline.cli enrich
-```
-
-If the API is unreachable, it falls back to `data/sample_epss.json` maps.
-
-
-## Live Data Mode
-
-For presentation data, run:
-
-```bash
-python -m cti_pipeline.cli run-pipeline --source all --days 3650 --fresh --live-only --enrich-limit 8
-```
-
-This backs up the current SQLite database, clears old rows, disables local fallback samples, collects reachable public sources, uses CISA's official KEV GitHub mirror if the main CISA endpoint blocks automated clients, enriches the top observed CVEs from NVD, and regenerates the report plus intelligence pack.
-
-## Gemini Reports
-
-LLM reporting is disabled by default. To enable Gemini through its OpenAI-compatible chat-completions endpoint:
-
-```bash
-export LLM_PROVIDER=openai_compatible
-export LLM_MODEL=gemini-2.5-flash
-export LLM_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai/chat/completions
-export LLM_API_KEY=...
-python -m cti_pipeline.cli llm-report --days 3650
-```
-
-The prompt requires JSON output, evidence document IDs, defensive recommendations, and caveats for uncorroborated social content.
-
-## Presentation Highlights
-
-- Mission Control summarizes high-risk findings and OSINT coverage posture.
-- OSINT Coverage shows source reliability, source category mix, language mix, collection gaps, and recommended next collection moves.
-- Priority Queue explains scoring, analyst verdict, source reliability, evidence, and recommended defensive actions.
-- Knowledge Graph connects sources, documents, selected entities, and co-mentioned entities.
-- Exports include a Markdown report, intelligence pack JSON, Sigma-style hunts, ATT&CK Navigator layer, and STIX-style bundle.
+---
 
 ## Project Structure
 
 ```text
 cti_pipeline/
-  collectors/      Public-source collectors
-  analysis/        Prioritization and source coverage scoring
-  extractors/      Entity extraction and normalization
-  storage/         SQLite and graph adapters
-  reports/         Analyst report generation
-config/            Source configuration
-dashboard/         Streamlit interface
-frontend/          React analyst command center
-docs/              Architecture and project notes
-scripts/           Demo and operational helper scripts
-tests/             Unit tests
+├── collectors/      Public-source collectors
+├── extractors/      Entity extraction and normalization
+├── analysis/        Prioritization and OSINT coverage scoring
+├── storage/         SQLite and Neo4j adapters
+├── reports/         Intelligence reporting
+├── api/             FastAPI backend
+
+frontend/            React analyst dashboard
+dashboard/           Streamlit dashboard
+config/              Source configuration
+docs/                Documentation
+scripts/             Automation scripts
+tests/               Unit tests
 ```
+
+---
+
+## System Requirements
+
+- Python ≥ 3.10 (recommended: 3.10 or 3.11)
+- Node.js ≥ 18.x
+- npm ≥ 9.x
+
+---
+
+## Installation
+
+### Clone Repository
+
+```bash
+git clone https://github.com/dqtxdy/osint-threat-intel.git
+cd osint-threat-intel
+```
+
+### Create Virtual Environment
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+```
+
+### Install Dependencies
+
+```bash
+pip install -r requirements.txt
+```
+
+### Configure Environment Variables
+
+Create a `.env` file in the project root directory:
+
+```env
+X_BEARER_TOKEN=
+OTX_API_KEY=
+GITHUB_TOKEN=
+ABUSECH_AUTH_KEY=
+PHISHTANK_APP_KEY=
+
+REDDIT_CLIENT_ID=
+REDDIT_CLIENT_SECRET=
+REDDIT_USER_AGENT="pentest-capstone-cti-pipeline/0.1 by your_username"
+
+LLM_PROVIDER=
+LLM_MODEL=
+LLM_BASE_URL=
+LLM_API_KEY=
+```
+
+---
+
+## Running the Platform
+
+### Start Backend
+
+```bash
+python3 -m uvicorn cti_pipeline.api.main:app --host 127.0.0.1 --port 8000 --reload
+```
+
+Backend API:
+
+```text
+http://127.0.0.1:8000
+```
+
+### Start Frontend
+
+Open a second terminal:
+
+```bash
+cd frontend
+npm install
+npm run dev -- --host 127.0.0.1 --port 5173
+```
+
+### Access Dashboard
+
+Open:
+
+```text
+http://127.0.0.1:5173
+```
+
+To start collecting live threat intelligence:
+
+1. Open the dashboard.
+2. Verify the backend service is running.
+3. Click **Run Live Update**.
+4. The system will collect data from configured OSINT and threat intelligence sources.
+5. Collected data will be processed through extraction, enrichment, prioritization, and reporting modules.
+6. Updated results will be displayed automatically on the dashboard.
+
+---
+
+## Live Pipeline Execution
+
+Run a complete live intelligence collection workflow:
+
+```bash
+python -m cti_pipeline.cli run-pipeline \
+  --source all \
+  --days 3650 \
+  --fresh \
+  --live-only \
+  --enrich-limit 8
+```
+
+This command:
+
+- Collects data from configured live sources
+- Disables educational fallback datasets
+- Enriches collected threat indicators
+- Regenerates intelligence reports
+- Updates the analyst dashboard
+
+---
+
+## Optional Neo4j Integration
+
+Start Neo4j:
+
+```bash
+docker compose up -d neo4j
+```
+
+Synchronize graph data:
+
+```bash
+python -m cti_pipeline.cli sync-neo4j
+```
+
+Neo4j Browser:
+
+```text
+http://localhost:7474
+```
+
+Default credentials:
+
+```text
+Username: neo4j
+Password: capstonepassword
+```
+
+---
+
+## LLM-Assisted Reporting
+
+The platform supports optional LLM-based intelligence reporting through OpenAI-compatible APIs.
+
+Example Gemini configuration:
+
+```bash
+export LLM_PROVIDER=openai_compatible
+export LLM_MODEL=gemini-2.5-flash
+export LLM_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai/chat/completions
+export LLM_API_KEY=<your_api_key>
+```
+
+Generate intelligence reports:
+
+```bash
+python -m cti_pipeline.cli llm-report --days 3650
+```
+
+Generated reports require:
+
+- Evidence references
+- Source attribution
+- Defensive recommendations
+- Confidence caveats
+
+---
 
 ## Safety Scope
 
-This project is strictly defensive and educational.
-- **Metadata and IOC collection only**: We do not download, store, or execute malware payloads or active exploits.
-- **No automated exploit behavior**: This pipeline is only for threat monitoring and defense planning.
-- **No scraping dashboards**: We only use official REST APIs, RSS feeds, or public/documented datasets. We do not scrape webpages or private panels (such as X web UI or AlienVault dashboard).
-- **Verifiable links**: All generated reports link back to their official source evidence.
+This project is strictly educational and defensive.
 
+The platform:
+
+- Collects information only from public sources
+- Uses official APIs, RSS feeds, and documented datasets
+- Does not perform private scraping
+- Does not download or execute malware
+- Does not perform automated exploitation
+- Preserves source attribution and evidence references
+- Supports defensive cybersecurity research only
+
+The project is not intended for offensive security operations or unauthorized activities.
+
+---
+
+## License
+
+This project is intended for educational and research purposes.
