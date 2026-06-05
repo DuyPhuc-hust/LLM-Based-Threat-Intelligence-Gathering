@@ -1,6 +1,6 @@
 # LLM-Based Threat Intelligence Gathering
 
-An educational Cyber Threat Intelligence (CTI) platform that collects, enriches, analyzes, and visualizes threat intelligence from public OSINT sources. The system supports automated threat monitoring, intelligence prioritization, knowledge graph construction, and analyst-oriented reporting.
+An educational Cyber Threat Intelligence (CTI) platform that collects, enriches, analyzes, and visualizes threat intelligence from public OSINT sources. The system supports automated threat monitoring, intelligence prioritization, evidence-based reporting, and analyst-oriented dashboards.
 
 ---
 
@@ -59,8 +59,6 @@ The system supports:
 
 * SQLite intelligence storage
 * Relationship tracking
-* Knowledge graph preparation
-* Neo4j integration
 * OSINT coverage scoring
 * Reliability assessment
 * Threat prioritization
@@ -75,7 +73,6 @@ Features include:
 * Priority Queue
 * Threat trend visualization
 * OSINT coverage metrics
-* Knowledge graph exploration
 * Intelligence report review
 
 #### Streamlit Dashboard
@@ -105,7 +102,7 @@ Public Sources
  Analysis & Prioritization
       │
       ▼
- SQLite / Neo4j Storage
+ SQLite Storage
       │
       ▼
  Analyst Dashboard & Reports
@@ -120,7 +117,7 @@ cti_pipeline/
 ├── collectors/      Public-source collectors
 ├── extractors/      Entity extraction and normalization
 ├── analysis/        Prioritization and OSINT coverage scoring
-├── storage/         SQLite and Neo4j adapters
+├── storage/         SQLite storage adapters
 ├── reports/         Intelligence reporting
 ├── api/             FastAPI backend
 
@@ -221,7 +218,9 @@ Open:
 http://127.0.0.1:5173
 ```
 
-To start collecting live threat intelligence:
+### Start Live Collection
+
+To begin collecting live threat intelligence:
 
 1. Open the dashboard.
 2. Verify the backend service is running.
@@ -234,7 +233,7 @@ To start collecting live threat intelligence:
 
 ## Live Pipeline Execution
 
-Run a complete live intelligence collection workflow:
+A complete live collection workflow can also be executed directly from the command line:
 
 ```bash
 python -m cti_pipeline.cli run-pipeline \
@@ -251,36 +250,7 @@ This command:
 * Disables educational fallback datasets
 * Enriches collected threat indicators
 * Regenerates intelligence reports
-* Updates the analyst dashboard
-
----
-
-## Optional Neo4j Integration
-
-Start Neo4j:
-
-```bash
-docker compose up -d neo4j
-```
-
-Synchronize graph data:
-
-```bash
-python -m cti_pipeline.cli sync-neo4j
-```
-
-Neo4j Browser:
-
-```text
-http://localhost:7474
-```
-
-Default credentials:
-
-```text
-Username: neo4j
-Password: capstonepassword
-```
+* Updates dashboard data
 
 ---
 
