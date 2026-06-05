@@ -1,0 +1,3603 @@
+import {
+  Activity,
+  AlertTriangle,
+  BarChart3,
+  Boxes,
+  Brain,
+  Download,
+  ExternalLink,
+  FileText,
+  GitBranch,
+  Globe2,
+  Layers3,
+  Languages,
+  Play,
+  Radar,
+  Search,
+  ShieldAlert,
+  Sparkles,
+  TerminalSquare,
+} from "lucide-react";
+import { useEffect, useMemo, useState, useRef } from "react";
+import type { ElementType, ReactNode } from "react";
+import { Bar, BarChart, CartesianGrid, Cell, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { api } from "./api";
+import type { AttackLayer, DocumentItem, EntityDetail, EntitySummary, GraphData, GraphEdge, GraphNode, Health, Overview, PriorityFinding, SourceCoverage, TrendSignal, SemanticGraphResponse, SemanticTriple } from "./types";
+
+type Page = "mission_control" | "intel_explorer" | "knowledge_graph" | "reports_detections";
+
+const DAYS = 3650;
+const CHART_GRID = "#dbe4ef";
+const CHART_TICK = { fill: "#475569", fontSize: 11 };
+const TOOLTIP_STYLE = {
+  background: "#ffffff",
+  border: "1px solid #d8e0ea",
+  color: "#0f172a",
+  boxShadow: "0 16px 35px rgba(15,23,42,0.12)",
+};
+
+const navItems: Array<{ id: Page; label: string; icon: React.ElementType }> = [
+  { id: "mission_control", label: "Mission Control", icon: Radar },
+  { id: "intel_explorer", label: "Intelligence Explorer", icon: Globe2 },
+  { id: "knowledge_graph", label: "Knowledge Graph", icon: GitBranch },
+  { id: "reports_detections", label: "Reports & Detections", icon: FileText },
+];
+
+export default function App() {
+  const [page, setPage] = useState<Page>("mission_control");
+  const [missionTab, setMissionTab] = useState<"overview" | "priorities" | "pipeline">("overview");
+  const [intelTab, setIntelTab] = useState<"feed" | "workbench" | "coverage">("feed");
+  const [reportsTab, setReportsTab] = useState<"reports" | "attack" | "detections" | "exports">("reports");
+  const [chatOpen, setChatOpen] = useState(false);
+  const [overview, setOverview] = useState<Overview | null>(null);
+  const [priorities, setPriorities] = useState<PriorityFinding[]>([]);
+  const [documents, setDocuments] = useState<DocumentItem[]>([]);
+  const [entities, setEntities] = useState<EntitySummary[]>([]);
+  const [trends, setTrends] = useState<TrendSignal[]>([]);
+  const [selectedEntity, setSelectedEntity] = useState<EntitySummary | null>(null);
+  const [entityDetail, setEntityDetail] = useState<EntityDetail | null>(null);
+  const [graph, setGraph] = useState<GraphData | null>(null);
+  const [semanticGraph, setSemanticGraph] = useState<SemanticGraphResponse | null>(null);
+  const [report, setReport] = useState("");
+  const [detections, setDetections] = useState("");
+  const [health, setHealth] = useState<Health | null>(null);
+  const [attackLayer, setAttackLayer] = useState<AttackLayer | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [notice, setNotice] = useState("");
+  const [graphLoading, setGraphLoading] = useState(false);
+
+  const [chatMessages, setChatMessages] = useState<Array<{ role: "user" | "assistant"; content: string }>>([]);
+  const [chatInput, setChatInput] = useState("");
+  const [chatLoading, setChatLoading] = useState(false);
+  const [chatError, setChatError] = useState("");
+  const [chatCitations, setChatCitations] = useState<Array<{ document_id: number; title: string; source_name: string; url: string }>>([]);
+  const [chatCaveats, setChatCaveats] = useState<string[]>([]);
+  const [chatRelatedEntities, setChatRelatedEntities] = useState<Array<{ type: string; value: string }>>([]);
+
+  useEffect(() => {
+    void refresh();
+  }, []);
+
+  useEffect(() => {
+    if (!selectedEntity && entities.length) {
+      setSelectedEntity(entities[0]);
+    }
+  }, [entities, selectedEntity]);
+
+  useEffect(() => {
+    if (!selectedEntity) return;
+    setSemanticGraph(null);
+    setGraph(null);
+    setGraphLoading(true);
+    
+    Promise.all([
+      api.entityDetail(selectedEntity.type, selectedEntity.value, DAYS).then(setEntityDetail),
+      api.entityGraph(selectedEntity.type, selectedEntity.value).then(setGraph),
+      api.entitySemanticGraph(selectedEntity.type, selectedEntity.value).then(setSemanticGraph)
+    ])
+      .catch((error) => setNotice(String(error)))
+      .finally(() => setGraphLoading(false));
+  }, [selectedEntity]);
+
+  async function refresh() {
+    setLoading(true);
+    try {
+      const [healthData, overviewData, priorityData, documentData, entityData, trendData, reportText, detectionText, attackData] = await Promise.all([
+        api.health(),
+        api.overview(DAYS),
+        api.priorities(DAYS),
+        api.documents(DAYS),
+        api.entities(),
+        api.trends(DAYS),
+        api.report(DAYS),
+        api.detections(DAYS),
+        api.attackLayer(DAYS),
+      ]);
+      setHealth(healthData);
+      setOverview(overviewData);
+      setPriorities(priorityData);
+      setDocuments(documentData);
+      setEntities(entityData);
+      setTrends(trendData);
+      setReport(reportText);
+      setDetections(detectionText);
+      setAttackLayer(attackData);
+      setNotice("");
+    } catch (error) {
+      setNotice(String(error));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleSendPrompt(text: string) {
+    if (!text.trim() || chatLoading) return;
+    const newMessages = [...chatMessages, { role: "user" as const, content: text }];
+    setChatMessages(newMessages);
+    setChatInput("");
+    setChatLoading(true);
+    setChatError("");
+    try {
+      const result = await api.chat(newMessages, DAYS);
+      setChatMessages([...newMessages, { role: "assistant" as const, content: result.answer }]);
+      setChatCitations(result.citations ?? []);
+      setChatCaveats(result.caveats ?? []);
+      setChatRelatedEntities(result.related_entities ?? []);
+    } catch (err: any) {
+      setChatError(err.message || String(err));
+    } finally {
+      setChatLoading(false);
+    }
+  }
+
+  async function runPipeline() {
+    setNotice("Live OSINT update running...");
+    try {
+      await api.runPipeline(DAYS);
+      await refresh();
+      setNotice("Live OSINT update complete.");
+    } catch (error) {
+      setNotice(String(error));
+    }
+  }
+
+  return (
+    <div className="min-h-screen text-slate-100">
+      <aside className="fixed inset-y-0 left-0 hidden w-72 border-r border-line bg-ink/90 px-4 py-5 backdrop-blur lg:block">
+        <div className="mb-8 flex items-center gap-3 px-2">
+          <div className="grid h-11 w-11 place-items-center rounded-xl border border-cyanx/30 bg-cyanx/10">
+            <Radar className="h-6 w-6 text-cyanx" />
+          </div>
+          <div>
+            <div className="text-sm font-semibold uppercase tracking-[0.18em] text-cyanx">OSINT CTI</div>
+            <div className="text-lg font-semibold">Command Center</div>
+          </div>
+        </div>
+        <nav className="space-y-1">
+          {navItems.map((item) => {
+            const Icon = item.icon;
+            const active = page === item.id;
+            return (
+              <button
+                key={item.id}
+                onClick={() => setPage(item.id)}
+                className={`flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-sm transition ${
+                  active ? "bg-cyanx/15 text-white ring-1 ring-cyanx/30" : "text-slate-400 hover:bg-white/5 hover:text-slate-100"
+                }`}
+              >
+                <Icon className="h-4 w-4" />
+                {item.label}
+              </button>
+            );
+          })}
+        </nav>
+        <div className="absolute bottom-5 left-4 right-4 rounded-lg border border-line bg-panel p-4 text-xs text-slate-400">
+          <div className="mb-2 flex items-center gap-2 font-medium text-slate-200">
+            <Activity className="h-4 w-4 text-tealt" />
+            Demo posture
+          </div>
+          <div>Evidence-bound intelligence, safe exports, reproducible fallbacks.</div>
+        </div>
+      </aside>
+
+      <main className="lg:pl-72">
+        <header className="sticky top-0 z-20 border-b border-line bg-ink/80 px-5 py-4 backdrop-blur">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+            <div>
+              <div className="text-xs font-medium uppercase tracking-[0.22em] text-cyanx">Threat Intelligence Operations</div>
+              <h1 className="mt-1 text-2xl font-semibold tracking-normal">{navItems.find((item) => item.id === page)?.label}</h1>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <Badge tone="blue">{DAYS}d window</Badge>
+              <button onClick={refresh} className="rounded-lg border border-line bg-panel px-3 py-2 text-sm text-slate-200 hover:bg-panel2">
+                Refresh
+              </button>
+              <button onClick={runPipeline} className="flex items-center gap-2 rounded-lg bg-cyanx px-3 py-2 text-sm font-semibold text-ink hover:bg-sky-300">
+                <Play className="h-4 w-4" />
+                Run Live Update
+              </button>
+            </div>
+          </div>
+          {notice ? <div className="mt-3 rounded-lg border border-amberx/30 bg-amberx/10 px-3 py-2 text-sm text-amber-100">{notice}</div> : null}
+        </header>
+
+        <section className="p-5">
+          {loading ? (
+            <div className="grid min-h-[60vh] place-items-center text-slate-400">Loading intelligence workspace...</div>
+          ) : (
+            <>
+              {page === "mission_control" && overview && (
+                <div className="space-y-5">
+                  <div className="flex gap-1.5 bg-ink/40 p-1 rounded-lg border border-line w-fit">
+                    {(["overview", "priorities", "pipeline"] as const).map((tab) => (
+                      <button
+                        key={tab}
+                        onClick={() => setMissionTab(tab)}
+                        className={`px-4 py-1.5 rounded-md text-xs font-semibold uppercase tracking-wider transition ${
+                          missionTab === tab
+                            ? "bg-cyanx text-ink shadow-sm"
+                            : "text-slate-400 hover:bg-white/5 hover:text-slate-200"
+                        }`}
+                      >
+                        {tab === "overview" && "Dashboard"}
+                        {tab === "priorities" && "Priority Queue"}
+                        {tab === "pipeline" && "Pipeline Status"}
+                      </button>
+                    ))}
+                  </div>
+                  {missionTab === "overview" && <OverviewPage overview={overview} trends={trends} />}
+                  {missionTab === "priorities" && <PrioritiesPage priorities={priorities} />}
+                  {missionTab === "pipeline" && <PipelineStatusPage health={health} overview={overview} onRun={runPipeline} />}
+                </div>
+              )}
+
+              {page === "intel_explorer" && overview && (
+                <div className="space-y-5">
+                  <div className="flex gap-1.5 bg-ink/40 p-1 rounded-lg border border-line w-fit">
+                    {(["feed", "workbench", "coverage"] as const).map((tab) => (
+                      <button
+                        key={tab}
+                        onClick={() => setIntelTab(tab)}
+                        className={`px-4 py-1.5 rounded-md text-xs font-semibold uppercase tracking-wider transition ${
+                          intelTab === tab
+                            ? "bg-cyanx text-ink shadow-sm"
+                            : "text-slate-400 hover:bg-white/5 hover:text-slate-200"
+                        }`}
+                      >
+                        {tab === "feed" && "Threat Feed"}
+                        {tab === "workbench" && "Entity Workbench"}
+                        {tab === "coverage" && "Source Coverage"}
+                      </button>
+                    ))}
+                  </div>
+                  {intelTab === "feed" && <ThreatFeed documents={documents} />}
+                  {intelTab === "workbench" && (
+                    <WorkbenchPage entities={entities} selected={selectedEntity} onSelect={setSelectedEntity} detail={entityDetail} />
+                  )}
+                  {intelTab === "coverage" && <CoveragePage coverage={overview.source_coverage} />}
+                </div>
+              )}
+
+              {page === "knowledge_graph" && (
+                <GraphPage entities={entities} selected={selectedEntity} onSelect={setSelectedEntity} semanticGraph={semanticGraph} graphLoading={graphLoading} />
+              )}
+
+              {page === "reports_detections" && (
+                <div className="space-y-5">
+                  <div className="flex gap-1.5 bg-ink/40 p-1 rounded-lg border border-line w-fit">
+                    {(["reports", "attack", "detections", "exports"] as const).map((tab) => (
+                      <button
+                        key={tab}
+                        onClick={() => setReportsTab(tab)}
+                        className={`px-4 py-1.5 rounded-md text-xs font-semibold uppercase tracking-wider transition ${
+                          reportsTab === tab
+                            ? "bg-cyanx text-ink shadow-sm"
+                            : "text-slate-400 hover:bg-white/5 hover:text-slate-200"
+                        }`}
+                      >
+                        {tab === "reports" && "Analyst Reports"}
+                        {tab === "attack" && "ATT&CK Coverage"}
+                        {tab === "detections" && "Sigma Detections"}
+                        {tab === "exports" && "Export Center"}
+                      </button>
+                    ))}
+                  </div>
+                  {reportsTab === "reports" && <ReportsPage report={report} entities={entities} selectedEntity={selectedEntity} />}
+                  {reportsTab === "attack" && <AttackCoveragePage attackLayer={attackLayer} />}
+                  {reportsTab === "detections" && <DetectionBuilderPage detections={detections} />}
+                  {reportsTab === "exports" && <ExportsPage report={report} detections={detections} />}
+                </div>
+              )}
+            </>
+          )}
+        </section>
+      </main>
+
+      <FloatingChatWidget
+        isOpen={chatOpen}
+        onToggle={() => setChatOpen(!chatOpen)}
+        messages={chatMessages}
+        input={chatInput}
+        setInput={setChatInput}
+        loading={chatLoading}
+        error={chatError}
+        citations={chatCitations}
+        caveats={chatCaveats}
+        relatedEntities={chatRelatedEntities}
+        llmConfigured={health?.llm_configured ?? false}
+        onSendPrompt={handleSendPrompt}
+        onClearChat={() => {
+          setChatMessages([]);
+          setChatCitations([]);
+          setChatCaveats([]);
+          setChatRelatedEntities([]);
+          setChatError("");
+        }}
+      />
+    </div>
+  );
+}
+
+function OverviewPage({ overview, trends }: { overview: Overview; trends: TrendSignal[] }) {
+  const confirmationData = Object.entries(overview.confirmation_matrix).map(([name, value]) => ({ name, value }));
+  const trendData = trends.slice(0, 8).map((trend) => ({ name: trend.value, mentions: trend.mentions, sources: trend.source_count }));
+  return (
+    <div className="space-y-5">
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-6">
+        <Metric label="Documents" value={overview.counts.documents} icon={FileText} />
+        <Metric label="Entities" value={overview.counts.entities} icon={Boxes} />
+        <Metric label="Sources" value={overview.counts.sources} icon={Globe2} />
+        <Metric label="Languages" value={overview.counts.languages} icon={Languages} />
+        <Metric label="Critical" value={overview.counts.critical_priorities} icon={AlertTriangle} tone="red" />
+        <Metric label="High" value={overview.counts.high_priorities} icon={ShieldAlert} tone="amber" />
+      </div>
+      <div className="grid gap-5 xl:grid-cols-3">
+        <Panel title="Top Priority Signals" className="xl:col-span-2">
+          <div className="space-y-3">
+            {overview.top_priorities.map((finding) => (
+              <PriorityRow key={`${finding.entity_type}-${finding.value}`} finding={finding} compact />
+            ))}
+          </div>
+        </Panel>
+        <Panel title="Corroboration Matrix">
+          <div className="h-64">
+              <ResponsiveContainer width="100%" height="100%" minWidth={1} minHeight={1}>
+              <BarChart data={confirmationData}>
+                <CartesianGrid stroke={CHART_GRID} />
+                <XAxis dataKey="name" tick={CHART_TICK} />
+                <YAxis tick={CHART_TICK} />
+                <Tooltip contentStyle={TOOLTIP_STYLE} />
+                <Bar dataKey="value" radius={[6, 6, 0, 0]}>
+                  {confirmationData.map((_, index) => <Cell key={index} fill={["#0f766e", "#0369a1", "#b45309"][index % 3]} />)}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </Panel>
+      </div>
+      <div className="grid gap-5 xl:grid-cols-[0.85fr_1.15fr]">
+        <Panel title="OSINT Coverage Posture">
+          <div className="flex items-end justify-between gap-4">
+            <div>
+              <div className="text-5xl font-semibold text-white">{overview.source_coverage.score}</div>
+              <div className="mt-1 text-sm uppercase tracking-wide text-slate-500">{overview.source_coverage.posture}</div>
+            </div>
+            <Badge tone={postureTone(overview.source_coverage.posture)}>
+              {overview.source_coverage.sources} sources / {overview.source_coverage.source_types} types
+            </Badge>
+          </div>
+          <div className="mt-4 h-2 overflow-hidden rounded-full bg-ink">
+            <div className="h-full rounded-full bg-cyanx" style={{ width: `${overview.source_coverage.score}%` }} />
+          </div>
+        </Panel>
+        <Panel title="Source Type Mix">
+          <div className="grid gap-3 sm:grid-cols-3">
+            {overview.source_coverage.type_mix.map((item) => (
+              <div key={item.name} className="rounded-lg border border-line bg-ink/40 p-3">
+                <div className="flex items-center justify-between gap-2">
+                  <Badge tone={sourceTypeTone(item.name)}>{item.name}</Badge>
+                  <span className="text-lg font-semibold text-slate-100">{item.count}</span>
+                </div>
+                <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-ink">
+                  <div className="h-full rounded-full bg-tealt" style={{ width: `${item.share * 100}%` }} />
+                </div>
+              </div>
+            ))}
+          </div>
+        </Panel>
+      </div>
+      <Panel title="Trending Entities">
+        <div className="h-72">
+          <ResponsiveContainer width="100%" height="100%" minWidth={1} minHeight={1}>
+            <BarChart data={trendData}>
+              <CartesianGrid stroke={CHART_GRID} />
+              <XAxis dataKey="name" tick={CHART_TICK} />
+              <YAxis tick={CHART_TICK} />
+              <Tooltip contentStyle={TOOLTIP_STYLE} />
+              <Bar dataKey="mentions" fill="#0369a1" radius={[6, 6, 0, 0]} />
+              <Bar dataKey="sources" fill="#0f766e" radius={[6, 6, 0, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      </Panel>
+    </div>
+  );
+}
+
+function CoveragePage({ coverage }: { coverage: SourceCoverage }) {
+  const typeData = coverage.type_mix.map((item) => ({ name: item.name, count: item.count }));
+  const languageData = coverage.language_mix.map((item) => ({ name: item.name, count: item.count }));
+  const strengths = coverage.strengths || [];
+  const watchItems = coverage.watch_items || coverage.gaps || [];
+  const recommendations = coverage.recommendations || [];
+
+  return (
+    <div className="space-y-5">
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
+        <Metric label="Coverage Score" value={coverage.score} icon={BarChart3} tone={coverage.score >= 70 ? "green" : coverage.score >= 50 ? "amber" : "red"} />
+        <Metric label="Documents" value={coverage.documents} icon={FileText} />
+        <Metric label="Sources" value={coverage.sources} icon={Globe2} />
+        <Metric label="Source Types" value={coverage.source_types} icon={Boxes} />
+        <Metric label="Languages" value={coverage.languages} icon={Languages} />
+      </div>
+
+      <div className="grid gap-5 xl:grid-cols-[1.25fr_0.75fr]">
+        <Panel title="Source Reliability Matrix">
+          <div className="overflow-hidden rounded-lg border border-line">
+            <table className="w-full border-collapse text-sm">
+              <thead className="bg-panel2 text-left text-xs uppercase tracking-wide text-slate-400">
+                <tr>
+                  <th className="px-4 py-3">Source</th>
+                  <th className="px-4 py-3">Type</th>
+                  <th className="px-4 py-3">Language</th>
+                  <th className="px-4 py-3">Docs</th>
+                  <th className="px-4 py-3">Reliability</th>
+                  <th className="px-4 py-3">Last Seen</th>
+                </tr>
+              </thead>
+              <tbody>
+                {coverage.source_mix.map((source) => (
+                  <tr key={source.source_id} className="border-t border-line/70 hover:bg-white/[0.03]">
+                    <td className="px-4 py-3 font-medium text-slate-100">{source.source_name}</td>
+                    <td className="px-4 py-3"><Badge tone={sourceTypeTone(source.source_type)}>{source.source_type}</Badge></td>
+                    <td className="px-4 py-3 text-slate-300">{source.language}</td>
+                    <td className="px-4 py-3 text-slate-300">{source.documents}</td>
+                    <td className="px-4 py-3"><Badge tone={reliabilityTone(source.reliability)}>{source.reliability}</Badge></td>
+                    <td className="px-4 py-3 text-slate-400">{formatDate(source.last_seen)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Panel>
+
+        <Panel title="Language Diversity">
+          <div className="h-56">
+            <ResponsiveContainer width="100%" height="100%" minWidth={1} minHeight={1}>
+              <BarChart data={languageData}>
+                <CartesianGrid stroke={CHART_GRID} />
+                <XAxis dataKey="name" tick={CHART_TICK} />
+                <YAxis tick={CHART_TICK} />
+                <Tooltip contentStyle={TOOLTIP_STYLE} />
+                <Bar dataKey="count" fill="#0f766e" radius={[6, 6, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+          <div className="mt-4 flex flex-wrap gap-2">
+            {coverage.language_mix.map((item) => (
+              <Badge key={item.name} tone="blue">{item.name}: {percentage(item.share)}</Badge>
+            ))}
+          </div>
+        </Panel>
+      </div>
+
+      <div className="grid gap-5 xl:grid-cols-[0.85fr_1.15fr]">
+        <Panel title="Source Category Distribution">
+          <div className="h-64">
+            <ResponsiveContainer width="100%" height="100%" minWidth={1} minHeight={1}>
+              <BarChart data={typeData}>
+                <CartesianGrid stroke={CHART_GRID} />
+                <XAxis dataKey="name" tick={CHART_TICK} />
+                <YAxis tick={CHART_TICK} />
+                <Tooltip contentStyle={TOOLTIP_STYLE} />
+                <Bar dataKey="count" radius={[6, 6, 0, 0]}>
+                  {typeData.map((_, index) => <Cell key={index} fill={["#0369a1", "#0f766e", "#b45309", "#dc2626"][index % 4]} />)}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </Panel>
+        <div className="space-y-4">
+          <Panel title="Coverage Strengths">
+            <SectionList items={strengths.length ? strengths : ["No major coverage strengths recorded."]} />
+          </Panel>
+          <Panel title="Watch Items / Residual Gaps">
+            <SectionList items={watchItems.length ? watchItems : ["No major coverage gaps observed."]} />
+          </Panel>
+          <Panel title="Recommended Collection Moves">
+            <SectionList items={recommendations.length ? recommendations : ["No collection moves recommended."]} />
+          </Panel>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PrioritiesPage({ priorities }: { priorities: PriorityFinding[] }) {
+  const [active, setActive] = useState<PriorityFinding | null>(priorities[0] ?? null);
+  useEffect(() => {
+    if (!priorities.length) {
+      setActive(null);
+      return;
+    }
+    if (!active || !priorities.some((finding) => finding.entity_type === active.entity_type && finding.value === active.value)) {
+      setActive(priorities[0]);
+    }
+  }, [priorities, active]);
+
+  return (
+    <div className="grid gap-5 xl:grid-cols-[1.2fr_0.8fr]">
+      <Panel title="Explainable Priority Queue">
+        <div className="space-y-3">
+          {priorities.map((finding) => (
+            <button key={`${finding.entity_type}-${finding.value}`} onClick={() => setActive(finding)} className="w-full text-left">
+              <PriorityRow finding={finding} />
+            </button>
+          ))}
+        </div>
+      </Panel>
+      <Panel title="Evidence And Actions">
+        {active ? (
+          <div className="space-y-5">
+            <div>
+              <div className="mb-2 flex items-center gap-2">
+                <PriorityBadge priority={active.priority} />
+                <span className="text-2xl font-semibold">{active.score}</span>
+              </div>
+              <h2 className="text-xl font-semibold">{active.value}</h2>
+              <p className="mt-1 text-sm text-slate-400">{active.confirmation}</p>
+            </div>
+            <div className="grid gap-3 border-y border-line py-3 sm:grid-cols-3">
+              <DecisionMetric label="Verdict" value={active.analyst_verdict} tone={verdictTone(active.analyst_verdict)} />
+              <DecisionMetric label="Reliability" value={active.source_reliability} tone={reliabilityTone(active.source_reliability)} />
+              <DecisionMetric label="Evidence" value={`${active.mentions} mentions / ${active.source_count} sources`} tone="blue" />
+            </div>
+            <SectionList title="Rationale" items={active.rationale} />
+            <SectionList title="Recommended Actions" items={active.recommended_actions} />
+            <div>
+              <h3 className="mb-2 text-sm font-semibold text-slate-200">Evidence</h3>
+              <div className="space-y-2">
+                {active.evidence_documents.map((doc) => (
+                  <a key={doc.id} href={doc.url} target="_blank" rel="noreferrer" className="block rounded-lg border border-line bg-ink/40 p-3 hover:border-cyanx/40">
+                    <div className="text-sm font-medium text-slate-100">{doc.title}</div>
+                    <div className="mt-1 text-xs text-slate-400">{doc.source_name}</div>
+                  </a>
+                ))}
+              </div>
+            </div>
+          </div>
+        ) : null}
+      </Panel>
+    </div>
+  );
+}
+
+function ThreatFeed({ documents }: { documents: DocumentItem[] }) {
+  const [query, setQuery] = useState("");
+  const filtered = useMemo(() => {
+    const q = query.toLowerCase();
+    return documents.filter((doc) => `${doc.title} ${doc.body} ${doc.source_name}`.toLowerCase().includes(q));
+  }, [documents, query]);
+  return (
+    <Panel title="Collected OSINT Documents">
+      <div className="mb-4 flex items-center gap-2 rounded-lg border border-line bg-ink/50 px-3 py-2">
+        <Search className="h-4 w-4 text-slate-500" />
+        <input value={query} onChange={(event) => setQuery(event.target.value)} className="w-full bg-transparent text-sm outline-none" placeholder="Search source, title, or body" />
+      </div>
+      <div className="overflow-hidden rounded-lg border border-line">
+        <table className="w-full border-collapse text-sm">
+          <thead className="bg-panel2 text-left text-xs uppercase tracking-wide text-slate-400">
+            <tr>
+              <th className="px-4 py-3">Source</th>
+              <th className="px-4 py-3">Title</th>
+              <th className="px-4 py-3">Type</th>
+              <th className="px-4 py-3">Published</th>
+            </tr>
+          </thead>
+          <tbody>
+            {filtered.map((doc) => (
+              <tr key={doc.id} className="border-t border-line/70 hover:bg-white/[0.03]">
+                <td className="px-4 py-3 text-slate-300">{doc.source_name}</td>
+                <td className="px-4 py-3">
+                  <a href={doc.url} target="_blank" rel="noreferrer" className="font-medium text-slate-100 hover:text-cyanx">
+                    {doc.title}
+                  </a>
+                </td>
+                <td className="px-4 py-3"><Badge>{doc.source_type}</Badge></td>
+                <td className="px-4 py-3 text-slate-400">{formatDate(doc.published_at ?? doc.collected_at)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </Panel>
+  );
+}
+
+function WorkbenchPage({
+  entities,
+  selected,
+  onSelect,
+  detail,
+}: {
+  entities: EntitySummary[];
+  selected: EntitySummary | null;
+  onSelect: (entity: EntitySummary) => void;
+  detail: EntityDetail | null;
+}) {
+  const [search, setSearch] = useState("");
+  const [selectedType, setSelectedType] = useState<string>("all");
+
+  const filteredEntities = useMemo(() => {
+    return entities.filter((entity) => {
+      const matchesSearch = entity.value.toLowerCase().includes(search.toLowerCase());
+      const matchesType = selectedType === "all" || entity.type === selectedType;
+      return matchesSearch && matchesType;
+    });
+  }, [entities, search, selectedType]);
+
+  const displayedEntities = useMemo(() => {
+    return filteredEntities.slice(0, 250);
+  }, [filteredEntities]);
+
+  const entityTypes = useMemo(() => {
+    const types = new Set(entities.map((e) => e.type));
+    return ["all", ...Array.from(types)];
+  }, [entities]);
+
+  const getEntityBadgeTone = (type: string): "red" | "blue" | "green" | "amber" | "slate" => {
+    switch (type.toLowerCase()) {
+      case "cve":
+        return "red";
+      case "ip":
+        return "amber";
+      case "domain":
+      case "url":
+        return "blue";
+      case "hash":
+        return "slate";
+      case "attack_technique":
+        return "green";
+      default:
+        return "slate";
+    }
+  };
+
+  return (
+    <div className="grid gap-5 xl:grid-cols-[320px_1fr]">
+      <Panel title="Entity Index">
+        <div className="mb-4 space-y-2">
+          {/* Search Input */}
+          <div className="relative">
+            <Search className="absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
+            <input
+              type="text"
+              placeholder="Search entities..."
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="w-full rounded-lg border border-line bg-ink/30 py-2 pl-9 pr-8 text-sm text-slate-200 placeholder-slate-400 focus:border-cyanx/50 focus:outline-none"
+            />
+            {search && (
+              <button
+                onClick={() => setSearch("")}
+                className="absolute right-3 top-2 text-slate-400 hover:text-slate-200 text-sm font-semibold"
+              >
+                ✕
+              </button>
+            )}
+          </div>
+
+          {/* Type Filter */}
+          <select
+            value={selectedType}
+            onChange={(e) => setSelectedType(e.target.value)}
+            className="w-full rounded-lg border border-line bg-ink/30 py-2 px-3 text-sm text-slate-300 focus:border-cyanx/50 focus:outline-none"
+          >
+            <option value="all">All Types</option>
+            {entityTypes
+              .filter((t) => t !== "all")
+              .map((type) => (
+                <option key={type} value={type}>
+                  {type.toUpperCase()}
+                </option>
+              ))}
+          </select>
+
+          {/* Match Count */}
+          <div className="text-[11px] text-slate-400 px-1 flex flex-col gap-0.5">
+            <div>
+              Found {filteredEntities.length} of {entities.length} entities
+            </div>
+            {filteredEntities.length > 250 && (
+              <div className="text-[10px] text-amberx font-semibold">
+                Showing top 250. Use search to refine.
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div className="max-h-[60vh] space-y-2 overflow-y-auto pr-1 scrollbar-thin">
+          {displayedEntities.length > 0 ? (
+            displayedEntities.map((entity) => (
+              <button
+                key={`${entity.type}-${entity.value}`}
+                onClick={() => onSelect(entity)}
+                className={`w-full rounded-lg border px-3 py-2 text-left text-sm transition ${
+                  selected?.type === entity.type && selected.value === entity.value
+                    ? "border-cyanx/50 bg-cyanx/10"
+                    : "border-line bg-ink/30 hover:bg-white/[0.03]"
+                }`}
+              >
+                <div className="font-medium text-slate-100 truncate">{entity.value}</div>
+                <div className="mt-1 flex items-center justify-between text-xs text-slate-400">
+                  <Badge tone={getEntityBadgeTone(entity.type)}>{entity.type}</Badge>
+                  <span>{entity.mentions} mentions</span>
+                </div>
+              </button>
+            ))
+          ) : (
+            <div className="text-center py-8 text-slate-400 text-xs">
+              No entities found matching your search.
+            </div>
+          )}
+        </div>
+      </Panel>
+      <Panel title="Entity Profile">
+        {detail ? (
+          <div className="space-y-5">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <Badge tone="blue">{detail.type}</Badge>
+                <h2 className="mt-2 text-2xl font-semibold">{detail.value}</h2>
+              </div>
+              <Badge tone="green">{detail.documents.length} evidence docs</Badge>
+            </div>
+            {detail.timeline.length ? (
+              <div className="h-56 rounded-lg border border-line bg-ink/30 p-3">
+                <ResponsiveContainer width="100%" height="100%" minWidth={1} minHeight={1}>
+                  <LineChart data={detail.timeline}>
+                    <CartesianGrid stroke={CHART_GRID} />
+                    <XAxis dataKey="day" tick={CHART_TICK} />
+                    <YAxis tick={CHART_TICK} />
+                    <Tooltip contentStyle={TOOLTIP_STYLE} />
+                    <Line type="monotone" dataKey="mentions" stroke="#0369a1" strokeWidth={2} />
+                    <Line type="monotone" dataKey="source_count" stroke="#0f766e" strokeWidth={2} />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+            ) : null}
+            <div className="space-y-4">
+              <MiniPanel title="Entity Enrichment Context">
+                <EnrichmentSummary detail={detail} onSelect={onSelect} entities={entities} />
+              </MiniPanel>
+              <MiniPanel title="Co-Mentions">
+                <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                  {detail.co_occurring.map((entity) => (
+                    <button
+                      key={`${entity.type}-${entity.value}`}
+                      onClick={() => {
+                        const existing = entities.find((e) => e.type === entity.type && e.value === entity.value);
+                        onSelect(existing ?? { type: entity.type, value: entity.value, mentions: 1 });
+                      }}
+                      className="flex items-center justify-between rounded-lg bg-ink/40 border border-line px-3 py-2 text-sm text-left hover:border-cyanx/40 hover:bg-cyanx/5 transition"
+                    >
+                      <span className="truncate mr-2">{entity.value}</span>
+                      <span className="text-[10px] text-slate-400 shrink-0">{entity.shared_documents} shared</span>
+                    </button>
+                  ))}
+                </div>
+              </MiniPanel>
+            </div>
+            <MiniPanel title="Evidence Documents">
+              <div className="space-y-2">
+                {detail.documents.map((doc) => (
+                  <a key={doc.id} href={doc.url} target="_blank" rel="noreferrer" className="block rounded-lg border border-line bg-ink/40 p-3 hover:border-cyanx/40">
+                    <div className="font-medium text-slate-100">{doc.title}</div>
+                    <div className="mt-1 text-xs text-slate-400">{doc.source_name} · {formatDate(doc.published_at ?? doc.collected_at)}</div>
+                    <p className="mt-2 line-clamp-2 text-sm text-slate-400">{doc.body}</p>
+                  </a>
+                ))}
+              </div>
+            </MiniPanel>
+          </div>
+        ) : null}
+      </Panel>
+    </div>
+  );
+}
+
+function GraphPage({
+  entities,
+  selected,
+  onSelect,
+  semanticGraph,
+  graphLoading,
+}: {
+  entities: EntitySummary[];
+  selected: EntitySummary | null;
+  onSelect: (entity: EntitySummary) => void;
+  semanticGraph: SemanticGraphResponse | null;
+  graphLoading: boolean;
+}) {
+  const [selectedLens, setSelectedLens] = useState<"risk" | "evidence" | "intel" | "triples" | "timeline">("risk");
+  const [selectedCategories, setSelectedCategories] = useState<string[]>([]);
+  const [selectedEntityTypes, setSelectedEntityTypes] = useState<string[]>([]);
+  const [selectedRiskLevels, setSelectedRiskLevels] = useState<string[]>([]);
+  const [hideNoise, setHideNoise] = useState<boolean>(true);
+  const [groupLowSignal, setGroupLowSignal] = useState<boolean>(true);
+  const [search, setSearch] = useState("");
+
+  // Reset filters when the focused entity changes, to prevent stale filter states
+  useEffect(() => {
+    setSelectedCategories([]);
+    setSelectedEntityTypes([]);
+    setSelectedRiskLevels([]);
+    setSearch("");
+  }, [selected]);
+
+  function isReferenceDomain(entityType: string, value: string): boolean {
+    if (entityType !== "domain") return false;
+    const val = value.toLowerCase().trim();
+    const NOISE_DOMAINS = ["github.com", "cisa.gov", "mitre.org", "abuse.ch", "google.com", "microsoft.com", "nvd.nist.gov", "symfony.com", "bin.sh"];
+    return NOISE_DOMAINS.some(domain => val === domain || val.endsWith("." + domain));
+  }
+
+  const { nodes: processedNodes, edges: processedEdges } = useMemo(() => {
+    if (!semanticGraph) return { nodes: [], edges: [] };
+
+    // 1. Filter Nodes
+    const filteredNodes = semanticGraph.nodes.filter(node => {
+      // Hide Noise toggle
+      if (hideNoise) {
+        const isNoise = node.badges?.includes("REFERENCE") || node.risk_level === "info" && isReferenceDomain(node.entity_type ?? "", node.value ?? "");
+        if (isNoise && node.id !== "selected") return false;
+      }
+
+      // Lens filters
+      if (selectedLens === "risk") {
+        if (node.kind === "related_entity" && !["critical", "high", "medium"].includes(node.risk_level ?? "")) {
+          return false;
+        }
+      } else if (selectedLens === "evidence") {
+        if (node.kind === "related_entity") return false;
+      } else if (selectedLens === "intel") {
+        if (node.kind === "source" || node.kind === "document") return false;
+      } else if (selectedLens === "timeline") {
+        if (node.kind === "related_entity") return false;
+      }
+
+      // Entity Types Filter
+      if (selectedEntityTypes.length > 0 && node.entity_type) {
+        if (node.id !== "selected" && !selectedEntityTypes.includes(node.entity_type)) return false;
+      }
+
+      // Risk Levels Filter
+      if (selectedRiskLevels.length > 0 && node.risk_level) {
+        if (node.id !== "selected" && !selectedRiskLevels.includes(node.risk_level)) return false;
+      }
+
+      return true;
+    });
+
+    // 2. Filter Edges
+    const nodeIds = new Set(filteredNodes.map(n => n.id));
+    const filteredEdges = semanticGraph.edges.filter(edge => {
+      if (!nodeIds.has(edge.source) || !nodeIds.has(edge.target)) return false;
+
+      // Lens edge category filters
+      if (selectedLens === "risk") {
+        if (!["vulnerability", "malware", "phishing", "structural"].includes(edge.category ?? "")) return false;
+      } else if (selectedLens === "evidence") {
+        if (!["structural", "general"].includes(edge.category ?? "") && edge.source !== "selected" && edge.target !== "selected") return false;
+      } else if (selectedLens === "intel") {
+        if (edge.category === "structural") return false;
+      } else if (selectedLens === "timeline") {
+        if (edge.category !== "structural") return false;
+      }
+
+      // Category Filter
+      if (selectedCategories.length > 0 && edge.category) {
+        if (!selectedCategories.includes(edge.category)) return false;
+      }
+
+      return true;
+    });
+
+    // Derive direct semantic edges in Related Intel lens to avoid orphaned nodes
+    if (selectedLens === "intel") {
+      const allDocs = semanticGraph.nodes.filter(n => n.kind === "document");
+      const derivedEdges: GraphEdge[] = [];
+      const derivedEdgeKeys = new Set<string>();
+
+      filteredNodes.forEach(node => {
+        if (node.id === "selected") return;
+
+        // Find document nodes D that connect to both "selected" and `node`
+        const connectingDocs = allDocs.filter(doc => {
+          const connToSelected = semanticGraph.edges.some(e => 
+            (e.source === "selected" && e.target === doc.id) ||
+            (e.target === "selected" && e.source === doc.id)
+          );
+          const connToNode = semanticGraph.edges.some(e => 
+            (e.source === node.id && e.target === doc.id) ||
+            (e.target === node.id && e.source === doc.id)
+          );
+          return connToSelected && connToNode;
+        });
+
+        connectingDocs.forEach(doc => {
+          const edgeToNode = semanticGraph.edges.find(e => 
+            (e.source === doc.id && e.target === node.id) ||
+            (e.target === doc.id && e.source === node.id)
+          );
+          if (edgeToNode && edgeToNode.category !== "structural") {
+            if (selectedCategories.length > 0 && !selectedCategories.includes(edgeToNode.category ?? "")) return;
+            const source = edgeToNode.source === node.id ? node.id : "selected";
+            const target = edgeToNode.target === node.id ? node.id : "selected";
+            const predicate = edgeToNode.predicate;
+            const key = `${source}->${target}:${predicate}`;
+
+            if (!derivedEdgeKeys.has(key) && !filteredEdges.some(fe => fe.source === source && fe.target === target && fe.predicate === predicate)) {
+              derivedEdgeKeys.add(key);
+              derivedEdges.push({
+                id: key,
+                source,
+                target,
+                predicate: edgeToNode.predicate,
+                label: edgeToNode.label,
+                category: edgeToNode.category,
+                confidence: edgeToNode.confidence,
+                source_reliability: edgeToNode.source_reliability,
+                evidence_document_ids: edgeToNode.evidence_document_ids,
+                evidence_count: edgeToNode.evidence_count,
+                rationale: `Derived from: ${edgeToNode.rationale}`,
+                first_seen: edgeToNode.first_seen,
+                last_seen: edgeToNode.last_seen
+              });
+            }
+          }
+        });
+      });
+      filteredEdges.push(...derivedEdges);
+    }
+
+    // 3. Group low-signal nodes if they exceed 3
+    const lowSignalNodes = filteredNodes.filter(n => 
+      n.kind === "related_entity" && 
+      (n.risk_level === "info" || n.risk_level === "low" || n.badges?.includes("REFERENCE") || isReferenceDomain(n.entity_type ?? "", n.value ?? ""))
+    );
+
+    if (groupLowSignal && lowSignalNodes.length > 3) {
+      const nonGrouped = filteredNodes.filter(n => !lowSignalNodes.includes(n));
+      const groupedId = "grouped-low-signal";
+      const groupedNode: GraphNode = {
+        id: groupedId,
+        label: `${lowSignalNodes.length} Reference Domains`,
+        kind: "related_entity",
+        type: "grouped",
+        risk_level: "info",
+        badges: ["LOW SIGNAL", "REFERENCE"],
+        description: `Collapsed reference domains (click individual nodes or toggle 'Hide Reference Nodes' off for detailed view):\n${lowSignalNodes.map(n => `• ${n.label} (${n.entity_type})`).join("\n")}`,
+        confidence: 1.0,
+        evidence_count: lowSignalNodes.reduce((acc, n) => acc + (n.evidence_count ?? 0), 0)
+      };
+
+      const remappedEdges = filteredEdges.map(edge => {
+        const isSrcLow = lowSignalNodes.some(n => n.id === edge.source);
+        const isTgtLow = lowSignalNodes.some(n => n.id === edge.target);
+        if (isSrcLow || isTgtLow) {
+          return {
+            ...edge,
+            source: isSrcLow ? groupedId : edge.source,
+            target: isTgtLow ? groupedId : edge.target,
+            label: "references domain",
+            predicate: "REFERENCES_DOMAIN"
+          };
+        }
+        return edge;
+      });
+
+      const seenKeys = new Set<string>();
+      const finalEdges = remappedEdges.filter(edge => {
+        const key = `${edge.source}->${edge.target}:${edge.predicate}`;
+        if (seenKeys.has(key)) return false;
+        seenKeys.add(key);
+        return true;
+      });
+
+      return {
+        nodes: [...nonGrouped, groupedNode],
+        edges: finalEdges
+      };
+    }
+
+    return { nodes: filteredNodes, edges: filteredEdges };
+  }, [semanticGraph, selectedLens, selectedCategories, selectedEntityTypes, selectedRiskLevels, hideNoise, groupLowSignal]);
+
+  const displayGraph = useMemo(() => ({
+    nodes: processedNodes,
+    edges: processedEdges
+  }), [processedNodes, processedEdges]);
+
+  const displayTriples = useMemo(() => {
+    if (!semanticGraph) return [];
+    
+    const nodesByLabel = new Map<string, GraphNode>();
+    semanticGraph.nodes.forEach(n => {
+      nodesByLabel.set(n.label, n);
+    });
+
+    return semanticGraph.triples.filter(triple => {
+      const subNode = nodesByLabel.get(triple.subject);
+      const objNode = nodesByLabel.get(triple.object);
+      
+      const matchingEdge = semanticGraph.edges.find(e => 
+        e.predicate === triple.predicate &&
+        ((e.source === subNode?.id && e.target === objNode?.id) ||
+         (subNode?.id === "selected" && e.source === "selected" && e.target === objNode?.id) ||
+         (objNode?.id === "selected" && e.target === "selected" && e.source === subNode?.id))
+      );
+
+      // Filter by active search query
+      if (search.trim()) {
+        const q = search.toLowerCase();
+        const matchesSearch = 
+          triple.subject.toLowerCase().includes(q) ||
+          triple.predicate.toLowerCase().includes(q) ||
+          triple.object.toLowerCase().includes(q) ||
+          triple.rationale.toLowerCase().includes(q);
+        if (!matchesSearch) return false;
+      }
+
+      // Filter by category
+      if (selectedCategories.length > 0) {
+        if (!matchingEdge?.category || !selectedCategories.includes(matchingEdge.category)) {
+          return false;
+        }
+      }
+
+      // Filter by entity type
+      if (selectedEntityTypes.length > 0) {
+        const subType = subNode?.entity_type;
+        const objType = objNode?.entity_type;
+        const subMatch = subType && selectedEntityTypes.includes(subType);
+        const objMatch = objType && selectedEntityTypes.includes(objType);
+        if (!subMatch && !objMatch) return false;
+      }
+
+      // Filter by risk levels
+      if (selectedRiskLevels.length > 0) {
+        const subRisk = subNode?.risk_level;
+        const objRisk = objNode?.risk_level;
+        const subMatch = subRisk && selectedRiskLevels.includes(subRisk);
+        const objMatch = objRisk && selectedRiskLevels.includes(objRisk);
+        if (!subMatch && !objMatch) return false;
+      }
+
+      // Hide noise nodes if hideNoise is checked
+      if (hideNoise) {
+        const isNoiseSub = subNode && subNode.id !== "selected" && (subNode.badges?.includes("REFERENCE") || (subNode.risk_level === "info" && isReferenceDomain(subNode.entity_type ?? "", subNode.value ?? "")));
+        const isNoiseObj = objNode && objNode.id !== "selected" && (objNode.badges?.includes("REFERENCE") || (objNode.risk_level === "info" && isReferenceDomain(objNode.entity_type ?? "", objNode.value ?? "")));
+        if (isNoiseSub || isNoiseObj) {
+          return false;
+        }
+      }
+
+      return true;
+    });
+  }, [semanticGraph, search, selectedCategories, selectedEntityTypes, selectedRiskLevels, hideNoise]);
+
+  function focusEntity(node: GraphNode) {
+    if (!node.entity_type || !node.value) return;
+    const existing = entities.find((item) => item.type === node.entity_type && item.value === node.value);
+    onSelect(existing ?? { type: node.entity_type, value: node.value, mentions: node.evidence_count ?? 0 });
+  }
+
+  const evidenceDocsCount = processedNodes.filter(n => n.kind === "document").length;
+  const relatedEntitiesCount = processedNodes.filter(n => n.kind === "related_entity").length;
+
+  return (
+    <div className="space-y-5 text-slate-100">
+      {/* Analyst Takeaway & Summary Header */}
+      {semanticGraph && (
+        <Panel title="Analyst Summary Takeaway">
+          <div className="space-y-3">
+            <div className="text-sm font-medium leading-relaxed border-l-4 border-cyanx pl-3 bg-cyanx/5 py-2 rounded-r-lg text-slate-200">
+              {semanticGraph.summary.analyst_takeaway}
+            </div>
+
+            <div className="flex flex-wrap items-center gap-3 text-xs text-slate-400">
+              <span className="font-medium text-slate-300">
+                Showing {semanticGraph.summary.displayed_evidence_count ?? semanticGraph.summary.evidence_count} of {semanticGraph.summary.total_evidence_count ?? semanticGraph.summary.evidence_count} evidence records
+              </span>
+              {semanticGraph.summary.aggregation_applied && (
+                <Badge tone="amber">
+                  {(semanticGraph.summary.displayed_evidence_count ?? semanticGraph.summary.evidence_count) ===
+                  (semanticGraph.summary.total_evidence_count ?? semanticGraph.summary.evidence_count)
+                    ? "Visual Grouping Active"
+                    : "Aggregation Active"}
+                </Badge>
+              )}
+            </div>
+            
+            {semanticGraph.summary.caveats.length > 0 && (
+              <div className="rounded-lg border border-amberx/30 bg-amberx/10 p-3 text-xs text-slate-300 space-y-1">
+                <div className="font-semibold uppercase tracking-wider text-amberx">Caveats & Limitations:</div>
+                <ul className="list-disc pl-4 space-y-1">
+                  {semanticGraph.summary.caveats.map((caveat, idx) => (
+                    <li key={idx}>{caveat}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+        </Panel>
+      )}
+
+      <Panel title="Knowledge Graph Workbench">
+        {/* Selected Entity Dropdown & Stats */}
+        <div className="mb-4 grid gap-3 lg:grid-cols-[1fr_auto] lg:items-center">
+          <select
+            value={selected ? `${selected.type}|${selected.value}` : ""}
+            onChange={(event) => {
+              const [type, value] = event.target.value.split("|");
+              const entity = entities.find((item) => item.type === type && item.value === value);
+              if (entity) onSelect(entity);
+            }}
+            className="w-full rounded-lg border border-line bg-panel px-3 py-2 text-sm text-slate-100"
+          >
+            {entities.map((entity) => (
+              <option key={`${entity.type}-${entity.value}`} value={`${entity.type}|${entity.value}`}>
+                {entity.type} · {entity.value}
+              </option>
+            ))}
+          </select>
+          <div className="flex flex-wrap gap-2">
+            <Badge tone="blue">{evidenceDocsCount} evidence docs</Badge>
+            <Badge tone="green">{relatedEntitiesCount} related entities</Badge>
+            <Badge tone="amber">{processedEdges.length} semantic relationships</Badge>
+          </div>
+        </div>
+
+        {/* Graph Lenses / Tabs */}
+        <div className="flex border-b border-line mb-4">
+          {(["risk", "evidence", "intel", "triples", "timeline"] as const).map((lens) => (
+            <button
+              key={lens}
+              onClick={() => setSelectedLens(lens)}
+              className={`px-4 py-2 text-sm font-semibold border-b-2 transition ${
+                selectedLens === lens ? "border-cyanx text-cyanx font-bold" : "border-transparent text-slate-400 hover:text-slate-200"
+              }`}
+            >
+              {lens === "risk" && "Risk Story"}
+              {lens === "evidence" && "Evidence"}
+              {lens === "intel" && "Related Intel"}
+              {lens === "triples" && "Triples"}
+              {lens === "timeline" && "Timeline / Sources"}
+            </button>
+          ))}
+        </div>
+
+        {/* Filter Controls Row */}
+        {selectedLens !== "triples" && (
+          <div className="bg-ink/20 p-3 rounded-lg border border-line mb-4 grid gap-3 md:grid-cols-2 lg:grid-cols-5">
+            {/* Category Filter */}
+            <div>
+              <label className="block text-[10px] font-bold text-slate-400 mb-1 tracking-wider">RELATIONSHIP CATEGORY</label>
+              <div className="flex flex-wrap gap-1">
+                {semanticGraph?.filters.categories.map(cat => (
+                  <button
+                    key={cat}
+                    onClick={() => {
+                      setSelectedCategories(prev =>
+                        prev.includes(cat) ? prev.filter(c => c !== cat) : [...prev, cat]
+                      );
+                    }}
+                    className={`px-2 py-0.5 rounded text-[10px] border transition ${
+                      selectedCategories.includes(cat)
+                        ? "bg-cyanx/20 border-cyanx text-cyanx"
+                        : "bg-ink border-line text-slate-400"
+                    }`}
+                  >
+                    {cat}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Entity Types Filter */}
+            <div>
+              <label className="block text-[10px] font-bold text-slate-400 mb-1 tracking-wider">ENTITY TYPES</label>
+              <div className="flex flex-wrap gap-1">
+                {semanticGraph?.filters.entity_types.map(type => (
+                  <button
+                    key={type}
+                    onClick={() => {
+                      setSelectedEntityTypes(prev =>
+                        prev.includes(type) ? prev.filter(t => t !== type) : [...prev, type]
+                      );
+                    }}
+                    className={`px-2 py-0.5 rounded text-[10px] border transition ${
+                      selectedEntityTypes.includes(type)
+                        ? "bg-tealt/20 border-tealt text-tealt"
+                        : "bg-ink border-line text-slate-400"
+                    }`}
+                  >
+                    {type}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Severity / Risk Filter */}
+            <div>
+              <label className="block text-[10px] font-bold text-slate-400 mb-1 tracking-wider">SEVERITY / RISK</label>
+              <div className="flex flex-wrap gap-1">
+                {semanticGraph?.filters.risk_levels.map(risk => (
+                  <button
+                    key={risk}
+                    onClick={() => {
+                      setSelectedRiskLevels(prev =>
+                        prev.includes(risk) ? prev.filter(r => r !== risk) : [...prev, risk]
+                      );
+                    }}
+                    className={`px-2 py-0.5 rounded text-[10px] border transition ${
+                      selectedRiskLevels.includes(risk)
+                        ? "bg-danger/20 border-danger text-danger"
+                        : "bg-ink border-line text-slate-400"
+                    }`}
+                  >
+                    {risk}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Toggles */}
+            <div>
+              <label className="flex items-center gap-2 text-xs font-semibold text-slate-200 cursor-pointer select-none mb-1">
+                <input
+                  type="checkbox"
+                  checked={hideNoise}
+                  onChange={(e) => setHideNoise(e.target.checked)}
+                  className="rounded border-line bg-ink text-cyanx focus:ring-cyanx"
+                />
+                Hide Reference/Noise Nodes
+              </label>
+              <label className="flex items-center gap-2 text-xs font-semibold text-slate-200 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={groupLowSignal}
+                  onChange={(e) => setGroupLowSignal(e.target.checked)}
+                  className="rounded border-line bg-ink text-cyanx focus:ring-cyanx"
+                />
+                Group Low-Signal Nodes
+              </label>
+            </div>
+
+            {/* Reset Action */}
+            <div className="flex items-center lg:justify-end">
+              <button
+                onClick={() => {
+                  setSelectedCategories([]);
+                  setSelectedEntityTypes([]);
+                  setSelectedRiskLevels([]);
+                  setHideNoise(true);
+                  setGroupLowSignal(true);
+                  setSearch("");
+                }}
+                className="text-xs text-slate-500 hover:text-slate-300 underline"
+              >
+                Reset Filters
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Graph Render Area */}
+        {graphLoading ? (
+          <div className="py-20 flex flex-col items-center justify-center text-slate-400 gap-3">
+            <div className="w-10 h-10 border-4 border-cyanx border-t-transparent rounded-full animate-spin"></div>
+            <div className="text-sm font-semibold tracking-wide">Loading Semantic Graph 2.0...</div>
+          </div>
+        ) : semanticGraph ? (
+          selectedLens === "triples" ? (
+            <TriplesTable triples={displayTriples} search={search} setSearch={setSearch} />
+          ) : displayGraph.edges.length === 0 ? (
+            <div className="py-20 flex flex-col items-center justify-center text-slate-400 gap-2 border border-line rounded-xl bg-ink/20">
+              <AlertTriangle className="h-8 w-8 text-amberx" />
+              <div className="text-sm font-semibold text-slate-200">No Relationships Found</div>
+              <div className="text-xs max-w-md text-center text-slate-400">
+                No semantic relationships match the active lens, categories, or filters. Try resetting filters or choosing a different lens.
+              </div>
+              <button
+                onClick={() => {
+                  setSelectedCategories([]);
+                  setSelectedEntityTypes([]);
+                  setSelectedRiskLevels([]);
+                  setHideNoise(true);
+                  setGroupLowSignal(true);
+                  setSearch("");
+                }}
+                className="mt-3 px-3 py-1.5 text-xs font-semibold rounded bg-cyanx text-ink hover:bg-sky-400 transition"
+              >
+                Reset All Filters
+              </button>
+            </div>
+          ) : (
+            <KnowledgeGraph
+              graph={displayGraph}
+              relationshipFilter={selectedLens}
+              onRelationshipFilter={() => {}}
+              onFocusEntity={focusEntity}
+              semanticGraphResponse={semanticGraph}
+            />
+          )
+        ) : (
+          <div className="py-8 text-center text-slate-400">No semantic graph loaded.</div>
+        )}
+      </Panel>
+
+      {/* Triples Table displayed below the graph workspace */}
+      {semanticGraph && selectedLens !== "triples" && (
+        <Panel title="Semantic Triples Feed">
+          <TriplesTable triples={displayTriples} search={search} setSearch={setSearch} />
+        </Panel>
+      )}
+    </div>
+  );
+}
+
+function TriplesTable({ triples, search, setSearch }: { triples: SemanticTriple[]; search: string; setSearch: (s: string) => void }) {
+  return (
+    <div className="space-y-3 text-slate-100">
+      <div className="flex items-center gap-2 rounded-lg border border-line bg-ink/50 px-3 py-2">
+        <Search className="h-4 w-4 text-slate-500" />
+        <input
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          className="w-full bg-transparent text-sm outline-none text-slate-100 placeholder-slate-400"
+          placeholder="Filter triples by subject, predicate, object, or rationale..."
+        />
+      </div>
+      <div className="overflow-hidden rounded-lg border border-line">
+        <table className="w-full border-collapse text-sm">
+          <thead className="bg-panel2 text-left text-xs uppercase tracking-wide text-slate-400">
+            <tr>
+              <th className="px-4 py-3">Subject</th>
+              <th className="px-4 py-3">Predicate</th>
+              <th className="px-4 py-3">Object</th>
+              <th className="px-4 py-3">Confidence</th>
+              <th className="px-4 py-3">Rationale</th>
+            </tr>
+          </thead>
+          <tbody>
+            {triples.length === 0 ? (
+              <tr>
+                <td colSpan={5} className="px-4 py-8 text-center text-slate-400">
+                  No triples match the current query.
+                </td>
+              </tr>
+            ) : (
+              triples.map((triple, index) => (
+                <tr key={index} className="border-t border-line/70 hover:bg-white/[0.03]">
+                  <td className="px-4 py-3 font-semibold text-slate-200">{triple.subject}</td>
+                  <td className="px-4 py-3">
+                    <Badge tone={relationshipTone(triple.predicate)}>{triple.predicate}</Badge>
+                  </td>
+                  <td className="px-4 py-3 font-semibold text-slate-200">{triple.object}</td>
+                  <td className="px-4 py-3 text-slate-300">{(triple.confidence * 100).toFixed(0)}%</td>
+                  <td className="px-4 py-3 text-slate-400">{triple.rationale}</td>
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function ReportsPage({ report, entities, selectedEntity }: { report: string; entities: EntitySummary[]; selectedEntity: EntitySummary | null }) {
+  const [gemini, setGemini] = useState("");
+  const [error, setError] = useState("");
+  const [scopeMode, setScopeMode] = useState("malware");
+  const entityTypes = useMemo(() => Array.from(new Set(entities.map((entity) => entity.type))).sort(), [entities]);
+  const [entityType, setEntityType] = useState("");
+  const [entityKey, setEntityKey] = useState("");
+  const [scopedReport, setScopedReport] = useState("");
+  const [scopeError, setScopeError] = useState("");
+
+  useEffect(() => {
+    if (!entityType && entityTypes.length) setEntityType(entityTypes[0]);
+  }, [entityTypes, entityType]);
+
+  useEffect(() => {
+    if (!entityKey && selectedEntity) setEntityKey(`${selectedEntity.type}|${selectedEntity.value}`);
+  }, [selectedEntity, entityKey]);
+
+  async function generateGemini() {
+    setError("");
+    setGemini("Generating...");
+    try {
+      setGemini(await api.geminiReport(DAYS));
+    } catch (err) {
+      setGemini("");
+      setError(String(err));
+    }
+  }
+
+  async function generateScopedReport() {
+    setScopeError("");
+    setScopedReport("Generating...");
+    try {
+      if (scopeMode === "all") {
+        setScopedReport(await api.report(DAYS));
+      } else if (scopeMode === "entity_type") {
+        setScopedReport(await api.report(DAYS, { entityType }));
+      } else if (scopeMode === "entity") {
+        const [type, value] = entityKey.split("|");
+        setScopedReport(await api.report(DAYS, { entityType: type, value }));
+      } else {
+        setScopedReport(await api.report(DAYS, { category: scopeMode }));
+      }
+    } catch (err) {
+      setScopedReport("");
+      setScopeError(String(err));
+    }
+  }
+
+  return (
+    <div className="grid gap-5 xl:grid-cols-[0.85fr_1.15fr]">
+      <div className="space-y-5">
+        <Panel title="Focused Report Builder">
+          <div className="space-y-3">
+            <select value={scopeMode} onChange={(event) => setScopeMode(event.target.value)} className="w-full rounded-lg border border-line bg-panel px-3 py-2 text-sm">
+              <option value="all">All Intelligence</option>
+              <option value="vulnerabilities">Vulnerabilities & Exposure</option>
+              <option value="malware">Malware, Ransomware & Indicators</option>
+              <option value="attack">MITRE ATT&CK Techniques</option>
+              <option value="vendors">Vendors & Products</option>
+              <option value="entity_type">One Entity Type</option>
+              <option value="entity">One Exact Entity</option>
+            </select>
+            {scopeMode === "entity_type" ? (
+              <select value={entityType} onChange={(event) => setEntityType(event.target.value)} className="w-full rounded-lg border border-line bg-panel px-3 py-2 text-sm">
+                {entityTypes.map((type) => (
+                  <option key={type} value={type}>{type}</option>
+                ))}
+              </select>
+            ) : null}
+            {scopeMode === "entity" ? (
+              <select value={entityKey} onChange={(event) => setEntityKey(event.target.value)} className="w-full rounded-lg border border-line bg-panel px-3 py-2 text-sm">
+                {entities.map((entity) => (
+                  <option key={`${entity.type}|${entity.value}`} value={`${entity.type}|${entity.value}`}>
+                    {entity.type} · {entity.value}
+                  </option>
+                ))}
+              </select>
+            ) : null}
+            <div className="flex flex-wrap gap-2">
+              <button onClick={generateScopedReport} className="flex items-center gap-2 rounded-lg bg-cyanx px-3 py-2 text-sm font-semibold text-ink hover:bg-sky-300">
+                <FileText className="h-4 w-4" />
+                Generate Focused Report
+              </button>
+              {scopedReport ? (
+                <button onClick={() => download("focused_report.md", scopedReport, "text/markdown")} className="rounded-lg border border-line bg-panel px-3 py-2 text-sm font-semibold text-slate-100 hover:bg-panel2">
+                  Download
+                </button>
+              ) : null}
+            </div>
+            {scopeError ? <div className="rounded-lg border border-amberx/30 bg-amberx/10 p-3 text-sm text-amber-100">{scopeError}</div> : null}
+          </div>
+        </Panel>
+        <Panel title="Gemini Analyst Report">
+          <button onClick={generateGemini} className="mb-4 flex items-center gap-2 rounded-lg bg-cyanx px-3 py-2 text-sm font-semibold text-ink hover:bg-sky-300">
+            <Sparkles className="h-4 w-4" />
+            Generate
+          </button>
+          {error ? <div className="rounded-lg border border-amberx/30 bg-amberx/10 p-3 text-sm text-amber-100">{error}</div> : null}
+          {gemini ? <pre className="max-h-[45vh] overflow-auto whitespace-pre-wrap text-sm leading-relaxed text-slate-300 scrollbar-thin">{gemini}</pre> : null}
+        </Panel>
+      </div>
+      <div className="space-y-5">
+        {scopedReport ? (
+          <Panel title="Focused Analyst Report">
+            <pre className="max-h-[72vh] overflow-auto whitespace-pre-wrap text-sm leading-relaxed text-slate-300 scrollbar-thin">{scopedReport}</pre>
+          </Panel>
+        ) : null}
+        <Panel title="Global Analyst Report">
+          <pre className="max-h-[72vh] overflow-auto whitespace-pre-wrap text-sm leading-relaxed text-slate-300 scrollbar-thin">{report}</pre>
+        </Panel>
+      </div>
+    </div>
+  );
+}
+
+function MetricCard({ title, value, icon: Icon, tone = "slate", subtitle }: { title: string; value: number | string; icon: any; tone?: string; subtitle?: string }) {
+  const borderColors = {
+    slate: "border-line bg-ink/20",
+    blue: "border-cyanx/20 bg-cyanx/5",
+    green: "border-tealt/20 bg-tealt/5",
+    amber: "border-amberx/20 bg-amberx/5",
+    red: "border-danger/20 bg-danger/5",
+  }[tone] || "border-line bg-ink/20";
+  
+  const textColors = {
+    slate: "text-slate-400",
+    blue: "text-cyanx",
+    green: "text-tealt",
+    amber: "text-amberx",
+    red: "text-danger",
+  }[tone] || "text-slate-400";
+
+  return (
+    <div className={`p-4 rounded-xl border flex items-center justify-between gap-4 shadow-sm ${borderColors}`}>
+      <div>
+        <div className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-1">{title}</div>
+        <div className="text-2xl font-black text-slate-100">{value}</div>
+        {subtitle && <div className="text-[10px] text-slate-500 mt-0.5">{subtitle}</div>}
+      </div>
+      <div className={`p-2.5 rounded-lg bg-white/[0.03] ${textColors}`}>
+        <Icon className="h-6 w-6" />
+      </div>
+    </div>
+  );
+}
+
+function mitreLink(id: string) {
+  if (id.includes(".")) {
+    const [parent, sub] = id.split(".");
+    return `https://attack.mitre.org/techniques/${parent}/${sub}/`;
+  }
+  return `https://attack.mitre.org/techniques/${id}/`;
+}
+
+function AttackCoveragePage({ attackLayer }: { attackLayer: AttackLayer | null }) {
+  const rawTechniques = (attackLayer?.techniques ?? []) as any[];
+  const ignoredIds = (attackLayer as any)?.ignored_invalid_ids_count ?? 0;
+
+  // Search & Sort states
+  const [searchQuery, setSearchQuery] = useState("");
+  const [sortField, setSortField] = useState<"id" | "name" | "tactic" | "mentions" | "sources" | "score">("score");
+  const [sortAsc, setSortAsc] = useState(false);
+
+  // Compute overall summary stats
+  const uniqueTactics = new Set(rawTechniques.flatMap(t => t.tactics ?? []));
+  const tacticsCovered = uniqueTactics.size;
+  const topSourceCount = rawTechniques.length ? Math.max(...rawTechniques.map(t => t.source_count ?? 0)) : 0;
+
+  // Filter and sort the technique inventory table
+  const filteredTechniques = useMemo(() => {
+    return rawTechniques.filter((t) => {
+      const q = searchQuery.toLowerCase();
+      const tacticStr = t.tactic || (t.tactics ? t.tactics.join(", ") : "");
+      return (
+        t.techniqueID.toLowerCase().includes(q) ||
+        (t.name && t.name.toLowerCase().includes(q)) ||
+        tacticStr.toLowerCase().includes(q) ||
+        (t.confirmation && t.confirmation.toLowerCase().includes(q))
+      );
+    });
+  }, [rawTechniques, searchQuery]);
+
+  const sortedTechniques = useMemo(() => {
+    const sorted = [...filteredTechniques];
+    sorted.sort((a, b) => {
+      let valA: any = "";
+      let valB: any = "";
+      if (sortField === "id") {
+        valA = a.techniqueID;
+        valB = b.techniqueID;
+      } else if (sortField === "name") {
+        valA = a.name || "";
+        valB = b.name || "";
+      } else if (sortField === "tactic") {
+        valA = a.tactic || (a.tactics ? a.tactics.join(", ") : "");
+        valB = b.tactic || (b.tactics ? b.tactics.join(", ") : "");
+      } else if (sortField === "mentions") {
+        valA = a.mention_count ?? a.mentions ?? 0;
+        valB = b.mention_count ?? b.mentions ?? 0;
+      } else if (sortField === "sources") {
+        valA = a.source_count ?? 0;
+        valB = b.source_count ?? 0;
+      } else if (sortField === "score") {
+        valA = a.score;
+        valB = b.score;
+      }
+
+      if (valA < valB) return sortAsc ? -1 : 1;
+      if (valA > valB) return sortAsc ? 1 : -1;
+      return 0;
+    });
+    return sorted;
+  }, [filteredTechniques, sortField, sortAsc]);
+
+  const handleSort = (field: typeof sortField) => {
+    if (sortField === field) {
+      setSortAsc(!sortAsc);
+    } else {
+      setSortField(field);
+      setSortAsc(false);
+    }
+  };
+
+  // Bar Chart Data (Top 20 valid techniques)
+  const chartData = rawTechniques.slice(0, 20).map((t) => ({
+    id: t.techniqueID,
+    name: t.name || "Unknown Technique",
+    score: t.score,
+    tactic: t.tactic || (t.tactics ? t.tactics.join(", ") : "")
+  }));
+
+  return (
+    <div className="space-y-6">
+      {/* 1. Summary Cards */}
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <MetricCard title="Valid Techniques" value={rawTechniques.length} icon={ShieldAlert} tone="blue" subtitle="Verified MITRE ATT&CK" />
+        <MetricCard title="Tactics Covered" value={tacticsCovered} icon={Radar} tone="green" subtitle="Across standard categories" />
+        <MetricCard title="Ignored Invalid IDs" value={ignoredIds} icon={AlertTriangle} tone="amber" subtitle="Non-Enterprise ATT&CK format" />
+        <MetricCard title="Top Source Count" value={topSourceCount} icon={Languages} tone="slate" subtitle="Maximum source redundancy" />
+      </div>
+
+      {/* 2. Heat Chart & Navigator Download Row */}
+      <div className="grid gap-5 lg:grid-cols-[1.20fr_0.80fr]">
+        <Panel title="Top 20 ATT&CK Techniques Heat">
+          {chartData.length ? (
+            <div className="h-80">
+              <ResponsiveContainer width="100%" height="100%" minWidth={1} minHeight={1}>
+                <BarChart data={chartData}>
+                  <CartesianGrid stroke={CHART_GRID} />
+                  <XAxis dataKey="id" tick={CHART_TICK} />
+                  <YAxis tick={CHART_TICK} />
+                  <Tooltip
+                    content={({ active, payload }) => {
+                      if (active && payload && payload.length) {
+                        const d = payload[0].payload;
+                        return (
+                          <div className="bg-slate-900 border border-slate-700 p-3 rounded-lg shadow-xl text-xs text-slate-200">
+                            <div className="font-bold text-slate-100 mb-1">{d.id} - {d.name}</div>
+                            <div>Tactic: <span className="text-cyanx font-semibold">{d.tactic || "N/A"}</span></div>
+                            <div>Score: <span className="text-amberx font-semibold">{d.score}</span></div>
+                          </div>
+                        );
+                      }
+                      return null;
+                    }}
+                  />
+                  <Bar dataKey="score" fill="#0284c7" radius={[6, 6, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          ) : (
+            <div className="rounded-lg border border-line bg-ink/40 p-4 text-sm text-slate-400">
+              No ATT&CK techniques extracted yet.
+            </div>
+          )}
+        </Panel>
+
+        <Panel title="Navigator Layer Export">
+          <div className="flex flex-col h-80 justify-between">
+            <div>
+              <p className="text-xs text-slate-400 mb-3 leading-relaxed">
+                Download this ATT&CK Coverage layer to upload directly into the official MITRE ATT&CK Navigator web application.
+              </p>
+              <button
+                onClick={() => download("attack_navigator_layer.json", JSON.stringify(attackLayer, null, 2), "application/json")}
+                className="flex items-center gap-2 rounded-lg bg-cyanx px-3 py-2 text-sm font-semibold text-ink hover:bg-sky-300 transition"
+              >
+                <Download className="h-4 w-4" />
+                Download Layer
+              </button>
+            </div>
+            <pre className="max-h-[160px] overflow-auto whitespace-pre-wrap text-[10px] leading-relaxed text-slate-400 bg-black/30 border border-line p-2 rounded-lg scrollbar-thin">
+              {JSON.stringify(attackLayer, null, 2)}
+            </pre>
+          </div>
+        </Panel>
+      </div>
+
+      {/* 3. Searchable/Sortable Technique Table */}
+      <Panel title="ATT&CK Technique Inventory">
+        <div className="space-y-4">
+          <div className="flex items-center gap-2 rounded-lg border border-line bg-ink/50 px-3 py-2">
+            <Search className="h-4 w-4 text-slate-500" />
+            <input
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="w-full bg-transparent text-sm outline-none text-slate-100 placeholder-slate-400"
+              placeholder="Search by ID, name, tactic, or confirmation..."
+            />
+          </div>
+
+          <div className="overflow-x-auto rounded-lg border border-line bg-panel2/30">
+            <table className="w-full border-collapse text-left text-sm text-slate-200">
+              <thead className="bg-panel2 text-xs uppercase tracking-wide text-slate-400">
+                <tr>
+                  <th className="px-4 py-3 cursor-pointer select-none hover:text-slate-100" onClick={() => handleSort("id")}>
+                    ID {sortField === "id" && (sortAsc ? "▲" : "▼")}
+                  </th>
+                  <th className="px-4 py-3 cursor-pointer select-none hover:text-slate-100" onClick={() => handleSort("name")}>
+                    Name {sortField === "name" && (sortAsc ? "▲" : "▼")}
+                  </th>
+                  <th className="px-4 py-3 cursor-pointer select-none hover:text-slate-100" onClick={() => handleSort("tactic")}>
+                    Tactic {sortField === "tactic" && (sortAsc ? "▲" : "▼")}
+                  </th>
+                  <th className="px-4 py-3 text-center cursor-pointer select-none hover:text-slate-100" onClick={() => handleSort("mentions")}>
+                    Mentions {sortField === "mentions" && (sortAsc ? "▲" : "▼")}
+                  </th>
+                  <th className="px-4 py-3 text-center cursor-pointer select-none hover:text-slate-100" onClick={() => handleSort("sources")}>
+                    Sources {sortField === "sources" && (sortAsc ? "▲" : "▼")}
+                  </th>
+                  <th className="px-4 py-3 text-center cursor-pointer select-none hover:text-slate-100" onClick={() => handleSort("score")}>
+                    Score {sortField === "score" && (sortAsc ? "▲" : "▼")}
+                  </th>
+                  <th className="px-4 py-3">Confirmation</th>
+                  <th className="px-4 py-3">Observation Window</th>
+                </tr>
+              </thead>
+              <tbody>
+                {sortedTechniques.length === 0 ? (
+                  <tr>
+                    <td colSpan={8} className="px-4 py-8 text-center text-slate-400">
+                      No techniques match the active query.
+                    </td>
+                  </tr>
+                ) : (
+                  sortedTechniques.map((tech) => {
+                    const mentionsVal = tech.mention_count ?? tech.mentions ?? 0;
+                    const sourcesVal = tech.source_count ?? 0;
+                    
+                    return (
+                      <tr key={tech.techniqueID} className="border-t border-line/50 hover:bg-white/[0.02] transition">
+                        <td className="px-4 py-3 font-semibold text-cyanx">
+                          <a
+                            href={mitreLink(tech.techniqueID)}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="hover:underline inline-flex items-center gap-1"
+                          >
+                            {tech.techniqueID}
+                            <ExternalLink className="h-3 w-3 inline" />
+                          </a>
+                        </td>
+                        <td className="px-4 py-3 font-medium text-slate-100">{tech.name || "Unknown Technique"}</td>
+                        <td className="px-4 py-3">
+                          <div className="flex flex-wrap gap-1">
+                            {tech.tactics && tech.tactics.length > 0 ? (
+                              tech.tactics.map((tac: string) => (
+                                <Badge key={tac} tone="blue">{tac}</Badge>
+                              ))
+                            ) : tech.tactic ? (
+                              <Badge tone="blue">{tech.tactic}</Badge>
+                            ) : (
+                              <span className="text-slate-500 text-xs">N/A</span>
+                            )}
+                          </div>
+                        </td>
+                        <td className="px-4 py-3 text-center font-semibold text-slate-300">{mentionsVal}</td>
+                        <td className="px-4 py-3 text-center font-semibold text-slate-300">{sourcesVal}</td>
+                        <td className="px-4 py-3 text-center">
+                          <Badge tone={tech.score >= 80 ? "red" : tech.score >= 40 ? "amber" : "green"}>
+                            {tech.score}
+                          </Badge>
+                        </td>
+                        <td className="px-4 py-3 text-xs">
+                          <Badge tone={tech.confirmation === "social + corroborated" ? "green" : tech.confirmation === "social only" ? "amber" : "blue"}>
+                            {tech.confirmation || "Unknown"}
+                          </Badge>
+                        </td>
+                        <td className="px-4 py-3 text-xs text-slate-400">
+                          {tech.first_seen ? (
+                            <span>
+                              {tech.first_seen.split("T")[0]} to {tech.last_seen ? tech.last_seen.split("T")[0] : "now"}
+                            </span>
+                          ) : (
+                            <span className="text-slate-600">N/A</span>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
+          </div>
+
+          {/* 4. Analyst Callout Note */}
+          <div className="rounded-xl border border-cyanx/20 bg-cyanx/5 p-4 text-slate-300 flex items-start gap-3">
+            <Brain className="h-5 w-5 text-cyanx shrink-0 mt-0.5" />
+            <div>
+              <span className="font-bold text-slate-100 block mb-1">Analyst Note: Evidence-Extracted Coverage</span>
+              <p className="text-xs leading-relaxed text-slate-300">
+                This matrix is built dynamically from ATT&CK technique IDs extracted directly from crawled threat feeds, vulnerability advisories, and social network posts. This represents <strong>observed intelligence coverage</strong> (i.e. what techniques are currently actively discussed in relation to campaigns or zero-days), rather than a assessment of an organization's internal detection capabilities or compliance status.
+              </p>
+            </div>
+          </div>
+        </div>
+      </Panel>
+    </div>
+  );
+}
+
+function DetectionBuilderPage({ detections }: { detections: string }) {
+  const [renderedRules, setRenderedRules] = useState(detections);
+  const [minPriority, setMinPriority] = useState<"low" | "medium" | "high" | "critical">("low");
+  const [selectedTypes, setSelectedTypes] = useState<string[]>(["cve", "attack_technique", "domain", "ip", "url"]);
+  const [customCategory, setCustomCategory] = useState("");
+  const [customProduct, setCustomProduct] = useState("");
+  const [limit, setLimit] = useState(10);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  const toggleType = (type: string) => {
+    setSelectedTypes(prev =>
+      prev.includes(type) ? prev.filter(t => t !== type) : [...prev, type]
+    );
+  };
+
+  useEffect(() => {
+    let active = true;
+    async function fetchCustomDetections() {
+      setLoading(true);
+      setError("");
+      try {
+        const typesStr = selectedTypes.join(",");
+        const customRules = await api.detections(DAYS, {
+          entityTypes: typesStr || "none",
+          category: customCategory.trim() || undefined,
+          product: customProduct.trim() || undefined,
+          minPriority: minPriority,
+          limit: limit,
+        });
+        if (active) {
+          setRenderedRules(customRules);
+        }
+      } catch (err) {
+        if (active) {
+          setError(String(err));
+        }
+      } finally {
+        if (active) {
+          setLoading(false);
+        }
+      }
+    }
+    
+    const timer = setTimeout(() => {
+      fetchCustomDetections();
+    }, 250);
+
+    return () => {
+      active = false;
+      clearTimeout(timer);
+    };
+  }, [selectedTypes, minPriority, customCategory, customProduct, limit]);
+
+  return (
+    <div className="grid gap-5 xl:grid-cols-[0.8fr_1.2fr]">
+      <Panel title="Sigma Detection Builder 2.0">
+        <div className="space-y-5 text-sm text-slate-300">
+          <div className="rounded-lg border border-line bg-ink/40 p-4 leading-relaxed text-slate-400 text-xs">
+            Generate customized, context-aware Sigma rules dynamically from crawled Threat Intel findings.
+          </div>
+
+          {/* 1. Target Threat Categories */}
+          <div>
+            <label className="block text-[10px] font-bold text-slate-400 mb-2 tracking-wider">TARGET THREAT TYPES</label>
+            <div className="space-y-2">
+              {[
+                { id: "cve", label: "Vulnerabilities (CVEs)" },
+                { id: "attack_technique", label: "ATT&CK Techniques" },
+                { id: "domain", label: "Malicious Domains" },
+                { id: "ip", label: "Malicious IPs" },
+                { id: "url", label: "Malicious URLs" },
+              ].map(type => (
+                <label key={type.id} className="flex items-center gap-2 cursor-pointer select-none text-slate-200">
+                  <input
+                    type="checkbox"
+                    checked={selectedTypes.includes(type.id)}
+                    onChange={() => toggleType(type.id)}
+                    className="rounded border-line bg-ink text-cyanx focus:ring-cyanx"
+                  />
+                  {type.label}
+                </label>
+              ))}
+            </div>
+          </div>
+
+          {/* 2. Minimum Severity */}
+          <div>
+            <label className="block text-[10px] font-bold text-slate-400 mb-1.5 tracking-wider">MINIMUM SEVERITY</label>
+            <select
+              value={minPriority}
+              onChange={(e) => setMinPriority(e.target.value as any)}
+              className="w-full rounded-lg border border-line bg-panel px-3 py-2 text-sm text-slate-200"
+            >
+              <option value="low">Low Severity & Above</option>
+              <option value="medium">Medium Severity & Above</option>
+              <option value="high">High Severity & Above</option>
+              <option value="critical">Critical Severity Only</option>
+            </select>
+          </div>
+
+          {/* 3. Logsource Overrides */}
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div>
+              <label className="block text-[10px] font-bold text-slate-400 mb-1 tracking-wider">OVERRIDE CATEGORY</label>
+              <input
+                type="text"
+                value={customCategory}
+                onChange={(e) => setCustomCategory(e.target.value)}
+                placeholder="e.g. process_creation"
+                className="w-full rounded-lg border border-line bg-panel px-3 py-1.5 text-xs text-slate-200 outline-none focus:border-cyanx"
+              />
+            </div>
+            <div>
+              <label className="block text-[10px] font-bold text-slate-400 mb-1 tracking-wider">OVERRIDE PRODUCT</label>
+              <input
+                type="text"
+                value={customProduct}
+                onChange={(e) => setCustomProduct(e.target.value)}
+                placeholder="e.g. windows"
+                className="w-full rounded-lg border border-line bg-panel px-3 py-1.5 text-xs text-slate-200 outline-none focus:border-cyanx"
+              />
+            </div>
+          </div>
+
+          {/* 4. Rule Limit */}
+          <div>
+            <label className="block text-[10px] font-bold text-slate-400 mb-1.5 tracking-wider">MAXIMUM RULES LIMIT ({limit})</label>
+            <input
+              type="range"
+              min={1}
+              max={30}
+              value={limit}
+              onChange={(e) => setLimit(Number(e.target.value))}
+              className="w-full accent-cyanx"
+            />
+          </div>
+
+          <div className="rounded-lg border border-amber-500/20 bg-amber-500/5 p-4 text-xs text-amber-800 leading-relaxed font-medium">
+            Note: Generated Sigma stubs are marked experimental and require testing/tuning against your internal SIEM schema before deploying.
+          </div>
+
+          <button
+            onClick={() => download("sigma_hunts.yml", renderedRules, "text/yaml")}
+            className="w-full flex justify-center items-center gap-2 rounded-lg bg-cyanx px-4 py-2.5 font-bold text-ink hover:bg-sky-300 transition"
+          >
+            <Download className="h-4 w-4" />
+            Download Sigma Rules
+          </button>
+        </div>
+      </Panel>
+
+      <Panel title="Sigma Hunting Preview">
+        <div className="relative">
+          {loading && (
+            <div className="absolute inset-0 bg-panel/70 flex items-center justify-center rounded-lg z-10">
+              <div className="w-8 h-8 border-4 border-cyanx border-t-transparent rounded-full animate-spin"></div>
+            </div>
+          )}
+          {error && (
+            <div className="mb-3 rounded-lg border border-danger/30 bg-danger/10 p-3 text-xs text-danger-200">
+              Failed to compile: {error}
+            </div>
+          )}
+          <pre className="max-h-[75vh] overflow-auto whitespace-pre-wrap text-xs leading-relaxed text-slate-800 bg-slate-50 border border-slate-200 p-4 rounded-xl scrollbar-thin font-mono shadow-inner">
+            {renderedRules}
+          </pre>
+        </div>
+      </Panel>
+    </div>
+  );
+}
+
+function PipelineStatusPage({ health, overview, onRun }: { health: Health | null; overview: Overview | null; onRun: () => void }) {
+  return (
+    <div className="grid gap-5 xl:grid-cols-2">
+      <Panel title="Runtime Status">
+        <div className="space-y-3 text-sm">
+          <StatusLine label="API" value={health?.status ?? "unknown"} />
+          <StatusLine label="Database" value={health?.db_path ?? "unknown"} />
+          <StatusLine label="LLM provider" value={health?.llm_provider ?? "unknown"} />
+          <StatusLine label="LLM model" value={health?.llm_model ?? "unknown"} />
+          <StatusLine label="LLM configured" value={health?.llm_configured ? "yes" : "no"} />
+        </div>
+        <button onClick={onRun} className="mt-5 flex items-center gap-2 rounded-lg bg-cyanx px-3 py-2 text-sm font-semibold text-ink hover:bg-sky-300">
+          <Play className="h-4 w-4" />
+          Run Live Update
+        </button>
+      </Panel>
+      <Panel title="Current Data Coverage">
+        {overview ? (
+          <div className="space-y-3 text-sm">
+            <StatusLine label="Documents" value={String(overview.counts.documents)} />
+            <StatusLine label="Entities" value={String(overview.counts.entities)} />
+            <StatusLine label="Sources" value={String(overview.counts.sources)} />
+            <StatusLine label="Critical priorities" value={String(overview.counts.critical_priorities)} />
+            <StatusLine label="Source names" value={overview.source_names.join(", ")} />
+          </div>
+        ) : null}
+      </Panel>
+    </div>
+  );
+}
+
+function ExportsPage({ report, detections }: { report: string; detections: string }) {
+  async function downloadJson(name: string, loader: () => Promise<Record<string, unknown>>) {
+    const data = await loader();
+    download(name, JSON.stringify(data, null, 2), "application/json");
+  }
+  return (
+    <div className="grid gap-5 xl:grid-cols-2">
+      <Panel title="Export Center">
+        <div className="grid gap-3 sm:grid-cols-2">
+          <ExportButton icon={FileText} label="Markdown Report" onClick={() => download("latest_report.md", report, "text/markdown")} />
+          <ExportButton icon={Boxes} label="Intelligence Pack" onClick={() => downloadJson("intelligence_pack.json", () => api.intelligencePack(DAYS))} />
+          <ExportButton icon={ShieldAlert} label="Sigma Hunts" onClick={() => download("sigma_hunts.yml", detections, "text/yaml")} />
+          <ExportButton icon={Layers3} label="ATT&CK Layer" onClick={() => downloadJson("attack_navigator_layer.json", () => api.attackLayer(DAYS))} />
+          <ExportButton icon={Brain} label="STIX Bundle" onClick={() => downloadJson("stix_bundle.json", () => api.stix(DAYS))} />
+        </div>
+      </Panel>
+      <Panel title="Detection Preview">
+        <pre className="max-h-[70vh] overflow-auto whitespace-pre-wrap text-xs leading-relaxed text-slate-300 scrollbar-thin">{detections}</pre>
+      </Panel>
+    </div>
+  );
+}
+
+function StatusLine({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex items-start justify-between gap-4 rounded-lg border border-line bg-ink/40 px-3 py-2">
+      <span className="text-slate-400">{label}</span>
+      <span className="text-right font-medium text-slate-100">{value}</span>
+    </div>
+  );
+}
+
+function getSVGCoordinates(svg: SVGSVGElement | null, clientX: number, clientY: number): { x: number; y: number } {
+  if (!svg) return { x: clientX, y: clientY };
+  const pt = svg.createSVGPoint();
+  pt.x = clientX;
+  pt.y = clientY;
+  try {
+    const ctm = svg.getScreenCTM();
+    if (ctm) {
+      const transformed = pt.matrixTransform(ctm.inverse());
+      return { x: transformed.x, y: transformed.y };
+    }
+  } catch (err) {
+    console.error("Error getting SVG coordinates:", err);
+  }
+  const rect = svg.getBoundingClientRect();
+  return { x: clientX - rect.left, y: clientY - rect.top };
+}
+
+function KnowledgeGraph({
+  graph,
+  relationshipFilter,
+  onRelationshipFilter,
+  onFocusEntity,
+  semanticGraphResponse,
+}: {
+  graph: GraphData;
+  relationshipFilter: string;
+  onRelationshipFilter: (value: string) => void;
+  onFocusEntity: (node: GraphNode) => void;
+  semanticGraphResponse: SemanticGraphResponse;
+}) {
+  const width = 1500;
+  
+  const visibleNodes = graph.nodes;
+  const visibleEdges = graph.edges;
+
+  const maxLayerCount = Math.max(
+    1,
+    visibleNodes.filter((node) => node.kind === "source").length,
+    visibleNodes.filter((node) => node.kind === "document").length,
+    visibleNodes.filter((node) => node.kind === "related_entity").length,
+  );
+  
+  const height = Math.max(640, maxLayerCount * 92 + 150);
+  const positions = useMemo(() => layoutGraphNodes(visibleNodes, width, height), [visibleNodes, height]);
+  const [activeNodeId, setActiveNodeId] = useState("selected");
+  const [activeEdgeId, setActiveEdgeId] = useState("");
+
+  // Pan / Zoom State
+  const [zoom, setZoom] = useState(1);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+
+  const zoomRef = useRef(1);
+  const panRef = useRef({ x: 0, y: 0 });
+  const pointerStartRef = useRef({ x: 0, y: 0 });
+  const dragStartRef = useRef({ x: 0, y: 0 });
+  const pointerDownRef = useRef(false);
+  const hasDraggedRef = useRef(false);
+  const capturedPointerIdRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    zoomRef.current = zoom;
+  }, [zoom]);
+
+  useEffect(() => {
+    panRef.current = pan;
+  }, [pan]);
+
+  // Reset zoom and pan only when the focused entity changes
+  const focusKey = semanticGraphResponse?.summary?.focus
+    ? `${semanticGraphResponse.summary.focus.type}:${semanticGraphResponse.summary.focus.value}`
+    : "";
+
+  useEffect(() => {
+    setZoom(1);
+    setPan({ x: 0, y: 0 });
+  }, [focusKey]);
+
+  // Setup Wheel listener to prevent page scrolling
+  const svgRef = useRef<SVGSVGElement | null>(null);
+
+  useEffect(() => {
+    const svg = svgRef.current;
+    if (!svg) return;
+
+    const handleWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      const zoomIntensity = 0.08;
+      let nextZoom = zoomRef.current - e.deltaY * zoomIntensity * 0.01;
+      nextZoom = Math.max(0.3, Math.min(3, nextZoom));
+
+      const svgPt = getSVGCoordinates(svg, e.clientX, e.clientY);
+      const currentZoom = zoomRef.current;
+      const currentPan = panRef.current;
+      const factor = nextZoom / currentZoom;
+
+      const newPan = {
+        x: svgPt.x - (svgPt.x - currentPan.x) * factor,
+        y: svgPt.y - (svgPt.y - currentPan.y) * factor,
+      };
+
+      setZoom(nextZoom);
+      setPan(newPan);
+    };
+
+    svg.addEventListener("wheel", handleWheel, { passive: false });
+    return () => {
+      svg.removeEventListener("wheel", handleWheel);
+    };
+  }, []);
+
+  const handlePointerDown = (e: React.PointerEvent<SVGSVGElement>) => {
+    if (e.pointerType === "mouse" && e.button !== 0) return;
+    const pt = getSVGCoordinates(svgRef.current, e.clientX, e.clientY);
+    const nextDragStart = { x: pt.x - panRef.current.x, y: pt.y - panRef.current.y };
+    pointerDownRef.current = true;
+    pointerStartRef.current = { x: e.clientX, y: e.clientY };
+    dragStartRef.current = nextDragStart;
+    hasDraggedRef.current = false;
+    capturedPointerIdRef.current = null;
+  };
+
+  const handlePointerMove = (e: React.PointerEvent<SVGSVGElement>) => {
+    if (!pointerDownRef.current) return;
+    const pt = getSVGCoordinates(svgRef.current, e.clientX, e.clientY);
+    const dx = e.clientX - pointerStartRef.current.x;
+    const dy = e.clientY - pointerStartRef.current.y;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+    if (dist > 4) {
+      hasDraggedRef.current = true;
+      if (capturedPointerIdRef.current === null) {
+        e.currentTarget.setPointerCapture(e.pointerId);
+        capturedPointerIdRef.current = e.pointerId;
+      }
+      const nextPan = {
+        x: pt.x - dragStartRef.current.x,
+        y: pt.y - dragStartRef.current.y,
+      };
+      setPan(nextPan);
+    }
+  };
+
+  const handlePointerUp = (e: React.PointerEvent<SVGSVGElement>) => {
+    if (capturedPointerIdRef.current === e.pointerId) {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    }
+    pointerDownRef.current = false;
+    capturedPointerIdRef.current = null;
+  };
+
+  const handleSvgClickCapture = (e: React.MouseEvent<SVGSVGElement>) => {
+    if (hasDraggedRef.current) {
+      e.stopPropagation();
+      e.preventDefault();
+      hasDraggedRef.current = false;
+    }
+  };
+
+  useEffect(() => {
+    if (!visibleNodes.some((node) => node.id === activeNodeId)) {
+      setActiveNodeId("selected");
+      setActiveEdgeId("");
+    }
+  }, [visibleNodes, activeNodeId]);
+
+  const activeNode = visibleNodes.find((node) => node.id === activeNodeId) ?? visibleNodes.find((node) => node.id === "selected");
+  const activeEdge = visibleEdges.find((edge) => edgeKey(edge) === activeEdgeId);
+  const connectedEdges = activeNode ? visibleEdges.filter((edge) => edge.source === activeNode.id || edge.target === activeNode.id) : [];
+  
+  const contextEdgeKeys = new Set<string>();
+  const connectedNodeIds = new Set<string>();
+  if (activeEdge) {
+    contextEdgeKeys.add(edgeKey(activeEdge));
+    connectedNodeIds.add(activeEdge.source);
+    connectedNodeIds.add(activeEdge.target);
+  } else if (activeNode?.id === "selected") {
+    visibleEdges.forEach((edge) => {
+      contextEdgeKeys.add(edgeKey(edge));
+      connectedNodeIds.add(edge.source);
+      connectedNodeIds.add(edge.target);
+    });
+  } else {
+    connectedEdges.forEach((edge) => {
+      contextEdgeKeys.add(edgeKey(edge));
+      connectedNodeIds.add(edge.source);
+      connectedNodeIds.add(edge.target);
+    });
+  }
+  if (activeNode) connectedNodeIds.add(activeNode.id);
+
+  return (
+    <div className="grid gap-4 xl:grid-cols-[1fr_380px] text-slate-100">
+      <div className="overflow-hidden rounded-xl border border-line bg-panel shadow-glow relative">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line px-4 py-3">
+          <div className="text-xs font-semibold text-slate-400">
+            ACTIVE LENS: <span className="text-cyanx font-bold uppercase">{relationshipFilter}</span>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Badge tone="green">Source</Badge>
+            <Badge tone="blue">Evidence Doc</Badge>
+            <Badge tone="red">Focus Entity</Badge>
+            <Badge tone="amber">Related Intel</Badge>
+          </div>
+        </div>
+
+        {/* Floating Zoom / Pan controls */}
+        <div className="absolute bottom-4 left-4 z-10 flex gap-1.5 bg-panel2/85 border border-line p-1.5 rounded-lg shadow backdrop-blur">
+          <button
+            onClick={() => {
+              const nextZoom = Math.min(3, zoom + 0.15);
+              setZoom(nextZoom);
+            }}
+            className="px-2.5 py-1 text-xs font-bold bg-ink/50 border border-line rounded text-slate-300 hover:text-white transition"
+            title="Zoom In"
+          >
+            ＋
+          </button>
+          <button
+            onClick={() => {
+              const nextZoom = Math.max(0.3, zoom - 0.15);
+              setZoom(nextZoom);
+            }}
+            className="px-2.5 py-1 text-xs font-bold bg-ink/50 border border-line rounded text-slate-300 hover:text-white transition"
+            title="Zoom Out"
+          >
+            －
+          </button>
+          <button
+            onClick={() => {
+              setZoom(1);
+              setPan({ x: 0, y: 0 });
+            }}
+            className="px-2.5 py-1 text-xs font-bold bg-ink/50 border border-line rounded text-slate-300 hover:text-white transition"
+            title="Fit View"
+          >
+            ⟲ Fit View
+          </button>
+        </div>
+
+        <svg
+          ref={svgRef}
+          viewBox={`0 0 ${width} ${height}`}
+          className="w-full bg-[#f8fafc]/50 cursor-grab active:cursor-grabbing select-none"
+          style={{ height: Math.min(height, 840) }}
+          onPointerDown={handlePointerDown}
+          onPointerMove={handlePointerMove}
+          onPointerUp={handlePointerUp}
+          onPointerCancel={handlePointerUp}
+          onClickCapture={handleSvgClickCapture}
+        >
+          <defs>
+            <marker id="kg-arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+              <path d="M0,0 L0,6 L9,3 z" fill="#94a3b8" />
+            </marker>
+            <marker id="kg-arrow-active" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+              <path d="M0,0 L0,6 L9,3 z" fill="#0ea5e9" />
+            </marker>
+          </defs>
+          <g transform={`translate(${pan.x}, ${pan.y}) scale(${zoom})`}>
+            <g opacity="0.15">
+              <rect x="34" y="58" width="228" height={height - 96} rx="18" fill="#e2e8f0" stroke="#cbd5e1" />
+              <rect x="330" y="58" width="326" height={height - 96} rx="18" fill="#e0f2fe" stroke="#bae6fd" />
+              <rect x="734" y="58" width="214" height={height - 96} rx="18" fill="#fee2e2" stroke="#fca5a5" />
+              <rect x="1100" y="58" width="338" height={height - 96} rx="18" fill="#fef3c7" stroke="#fde68a" />
+            </g>
+            <g fill="#475569" fontSize="11" fontWeight="800" letterSpacing="0.1em">
+              <text x="148" y="34" textAnchor="middle">OSINT SOURCES</text>
+              <text x="493" y="34" textAnchor="middle">EVIDENCE DOCUMENTS</text>
+              <text x="842" y="34" textAnchor="middle">FOCUS ENTITY</text>
+              <text x={width - 210} y="34" textAnchor="middle">RELATED INTEL</text>
+            </g>
+            {visibleEdges.map((edge) => {
+              const sourceNode = visibleNodes.find((node) => node.id === edge.source);
+              const targetNode = visibleNodes.find((node) => node.id === edge.target);
+              const sourceCenter = positions[edge.source];
+              const targetCenter = positions[edge.target];
+              if (!sourceNode || !targetNode || !sourceCenter || !targetCenter) return null;
+              const source = nodeEdgePoint(sourceNode, sourceCenter, Math.sign(targetCenter.x - sourceCenter.x) || 1);
+              const target = nodeEdgePoint(targetNode, targetCenter, Math.sign(sourceCenter.x - targetCenter.x) || -1);
+              const highlighted = contextEdgeKeys.has(edgeKey(edge));
+              const muted = !highlighted && Boolean(activeNode && activeNode.id !== "selected");
+              const path = relationshipPath(source, target);
+              const label = edge.predicate ?? edge.label;
+              const truncatedLabel = label.length > 22 ? truncate(label, 22) : label;
+              const labelPosition = relationshipLabelPosition(source, target);
+              const showLabel = edgeKey(edge) === activeEdgeId || (!activeEdgeId && activeNode?.id !== "selected" && highlighted && connectedEdges.length <= 10);
+              return (
+                <g
+                  key={edgeKey(edge)}
+                  className="cursor-pointer"
+                  onClick={() => {
+                    setActiveEdgeId(edgeKey(edge));
+                    setActiveNodeId("");
+                  }}
+                >
+                  <path
+                    d={path}
+                    fill="none"
+                    stroke={highlighted ? "#0ea5e9" : "#94a3b8"}
+                    strokeWidth={highlighted ? 3.0 : 1.4}
+                    strokeOpacity={muted ? 0.12 : highlighted ? 0.9 : 0.4}
+                    markerEnd={highlighted ? "url(#kg-arrow-active)" : "url(#kg-arrow)"}
+                    strokeDasharray={edge.category === "noise/reference" ? "4,4" : undefined}
+                  />
+                  {showLabel ? (
+                    <g transform={`translate(${labelPosition.x}, ${labelPosition.y})`}>
+                      <rect x={-(truncatedLabel.length * 3.5 + 11)} y="-12" width={truncatedLabel.length * 7 + 22} height="22" rx="7" fill="#ffffff" stroke={highlighted ? "#0ea5e9" : "#d8e0ea"} strokeWidth={highlighted ? 2 : 1} />
+                      <text textAnchor="middle" dominantBaseline="middle" fill={highlighted ? "#0ea5e9" : "#334155"} fontSize="10" fontWeight="700">
+                        {truncatedLabel}
+                      </text>
+                    </g>
+                  ) : null}
+                </g>
+              );
+            })}
+            {visibleNodes.map((node) => {
+              const pos = positions[node.id];
+              if (!pos) return null;
+              const active = node.id === activeNode?.id;
+              const muted = Boolean(activeNode && activeNode.id !== "selected" && !connectedNodeIds.has(node.id));
+              return (
+                <GraphSvgNode
+                  key={node.id}
+                  node={node}
+                  x={pos.x}
+                  y={pos.y}
+                  active={active}
+                  muted={muted}
+                  onClick={() => {
+                    setActiveNodeId(node.id);
+                    setActiveEdgeId("");
+                  }}
+                />
+              );
+            })}
+          </g>
+        </svg>
+      </div>
+      <GraphInspector
+        node={activeNode}
+        edge={activeEdge}
+        edges={connectedEdges}
+        nodes={visibleNodes}
+        onFocusEntity={onFocusEntity}
+        semanticGraphResponse={semanticGraphResponse}
+      />
+    </div>
+  );
+}
+
+function GraphSvgNode({
+  node,
+  x,
+  y,
+  active,
+  muted,
+  onClick,
+}: {
+  node: GraphNode;
+  x: number;
+  y: number;
+  active: boolean;
+  muted: boolean;
+  onClick: () => void;
+}) {
+  const color = graphNodeColor(node);
+  const label = truncate(node.label, node.kind === "document" ? 38 : node.kind === "related_entity" ? 22 : 24);
+  const typeLabel = node.kind === "selected_entity" ? node.type : node.kind === "related_entity" ? node.entity_type ?? node.type : node.kind ?? node.type;
+  
+  // Risk borders
+  const riskColor = 
+    node.risk_level === "critical" ? "#ef4444" : 
+    node.risk_level === "high" ? "#f59e0b" : 
+    node.risk_level === "medium" ? "#3b82f6" : 
+    "#64748b";
+
+  if (node.kind === "document") {
+    return (
+      <g className="cursor-pointer" opacity={muted ? 0.36 : 1} onClick={onClick}>
+        <rect x={x - 132} y={y - 34} width="264" height="68" rx="12" fill="#ffffff" stroke={active ? "#0ea5e9" : color} strokeWidth={active ? 3 : 1.7} />
+        {/* Risk indicator line */}
+        <line x1={x - 132} y1={y - 30} x2={x - 132} y2={y + 30} stroke={riskColor} strokeWidth="5" strokeLinecap="round" />
+        <text x={x - 120} y={y - 8} textAnchor="start" fill="#0f172a" fontSize="11" fontWeight="700">
+          {truncate(label, 34)}
+        </text>
+        <text x={x - 120} y={y + 13} textAnchor="start" fill="#475569" fontSize="9" fontWeight="600">
+          DOCUMENT · {node.source_name ? truncate(node.source_name, 22) : "evidence"}
+        </text>
+      </g>
+    );
+  }
+  if (node.kind === "related_entity") {
+    return (
+      <g className="cursor-pointer" opacity={muted ? 0.32 : 1} onClick={onClick}>
+        <rect x={x - 98} y={y - 28} width="196" height="56" rx="12" fill="#ffffff" stroke={active ? "#0ea5e9" : color} strokeWidth={active ? 3 : 1.6} />
+        <circle cx={x - 70} cy={y} r="17" fill={`${color}18`} stroke={color} strokeWidth="1.5" />
+        <text x={x - 70} y={y + 3} textAnchor="middle" fill={color} fontSize="8" fontWeight="800">
+          {nodeIconText(node)}
+        </text>
+        <text x={x - 42} y={y - 4} fill="#0f172a" fontSize="11" fontWeight="800">
+          {truncate(label, 18)}
+        </text>
+        <text x={x - 42} y={y + 15} fill="#475569" fontSize="9" fontWeight="700">
+          {truncate(formatGraphType(typeLabel), 20)}
+        </text>
+        {/* Risk dot indicator */}
+        <circle cx={x + 80} cy={y - 12} r="4.5" fill={riskColor} />
+      </g>
+    );
+  }
+  const radius = node.kind === "selected_entity" ? 46 : 34;
+  return (
+    <g className="cursor-pointer" opacity={muted ? 0.34 : 1} onClick={onClick}>
+      <circle cx={x} cy={y} r={radius} fill={`${color}18`} stroke={active ? "#0ea5e9" : color} strokeWidth={active ? 4 : 2.2} />
+      <circle cx={x} cy={y - 18} r="13" fill="#ffffff" stroke={color} strokeWidth="1.5" />
+      <text x={x} y={y - 14} textAnchor="middle" fill={color} fontSize="9" fontWeight="800">
+        {nodeIconText(node)}
+      </text>
+      <text x={x} y={y + 8} textAnchor="middle" fill="#0f172a" fontSize="11" fontWeight="800">
+        {label}
+      </text>
+      <text x={x} y={y + 27} textAnchor="middle" fill="#475569" fontSize="9" fontWeight="700">
+        {formatGraphType(typeLabel).toUpperCase()}
+      </text>
+    </g>
+  );
+}
+
+function GraphInspector({
+  node,
+  edge,
+  edges,
+  nodes,
+  onFocusEntity,
+  semanticGraphResponse,
+}: {
+  node: GraphNode | undefined;
+  edge: GraphEdge | undefined;
+  edges: GraphEdge[];
+  nodes: GraphNode[];
+  onFocusEntity: (node: GraphNode) => void;
+  semanticGraphResponse: SemanticGraphResponse;
+}) {
+  const source = edge ? nodes.find((item) => item.id === edge.source) : undefined;
+  const target = edge ? nodes.find((item) => item.id === edge.target) : undefined;
+
+  // Resolve document nodes for the edge evidence
+  const docNodes = useMemo(() => {
+    if (!edge?.evidence_document_ids || !semanticGraphResponse) return [];
+    return semanticGraphResponse.nodes.filter(
+      (n) => n.kind === "document" && edge.evidence_document_ids?.includes(Number(n.value))
+    );
+  }, [edge, semanticGraphResponse]);
+
+  return (
+    <div className="rounded-xl border border-line bg-panel p-4 shadow-glow text-slate-100 flex flex-col justify-between min-h-[500px]">
+      <div>
+        <div className="mb-4 flex items-center justify-between gap-3 border-b border-line pb-2">
+          <h3 className="text-sm font-bold text-slate-400 uppercase tracking-wider">
+            {edge ? "Relationship" : "Node"} Inspector
+          </h3>
+          {node ? (
+            <Badge tone={graphNodeTone(node)}>{formatGraphType(node.kind ?? node.type)}</Badge>
+          ) : null}
+        </div>
+
+        {/* Edge Details */}
+        {edge && source && target ? (
+          <div className="space-y-4">
+            <div className="rounded-lg border border-cyanx/25 bg-cyanx/5 p-3">
+              <div className="flex items-center justify-between gap-2 mb-2">
+                <Badge tone={relationshipTone(edge.predicate)}>{edge.predicate ?? edge.label}</Badge>
+                <Badge tone="slate">{edge.category}</Badge>
+              </div>
+              <div className="text-sm font-bold text-slate-200">
+                {source.label} → {target.label}
+              </div>
+              <p className="mt-2 text-xs leading-relaxed text-slate-400">
+                {edge.rationale}
+              </p>
+            </div>
+
+            <div className="space-y-2 text-xs">
+              <StatusLine label="Confidence" value={`${((edge.confidence ?? 1.0) * 100).toFixed(0)}%`} />
+              <StatusLine label="Source Reliability" value={edge.source_reliability ?? "unknown"} />
+              <StatusLine label="Evidence Count" value={String(edge.evidence_count ?? 1)} />
+            </div>
+
+            {docNodes.length > 0 && (
+              <div>
+                <h4 className="text-xs font-bold text-slate-400 uppercase mb-2">Evidence Documents</h4>
+                <div className="space-y-2">
+                  {docNodes.map((doc) => (
+                    <a
+                      key={doc.id}
+                      href={doc.url || "#"}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="block rounded bg-ink/40 p-2 text-xs hover:border-cyanx border border-transparent transition"
+                    >
+                      <div className="font-semibold text-slate-200 line-clamp-1">{doc.label}</div>
+                      <div className="text-[10px] text-slate-400">{doc.source_name}</div>
+                    </a>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        ) : null}
+
+        {/* Node Details */}
+        {node && !edge ? (
+          <div className="space-y-4">
+            <div>
+              <div className="text-[10px] uppercase font-bold tracking-wider text-slate-400 mb-1">
+                {formatGraphType(node.entity_type || node.type)}
+              </div>
+              <div className="text-lg font-bold text-slate-100">{node.title ?? node.label}</div>
+              
+              {node.badges && node.badges.length > 0 && (
+                <div className="mt-2 flex flex-wrap gap-1">
+                  {node.badges.map((b) => (
+                    <Badge key={b} tone={node.risk_level === "critical" ? "red" : node.risk_level === "high" ? "amber" : "blue"}>
+                      {b}
+                    </Badge>
+                  ))}
+                </div>
+              )}
+
+              {node.description ? (
+                <p className="mt-3 text-xs leading-relaxed text-slate-400 whitespace-pre-wrap">
+                  {node.description}
+                </p>
+              ) : null}
+            </div>
+
+            <div className="space-y-2 text-xs">
+              <StatusLine label="Risk Level" value={(node.risk_level ?? "info").toUpperCase()} />
+              {node.confidence ? (
+                <StatusLine label="Extract Confidence" value={`${(node.confidence * 100).toFixed(0)}%`} />
+              ) : null}
+              {node.evidence_count ? (
+                <StatusLine label="Connected Evidence" value={`${node.evidence_count} docs`} />
+              ) : null}
+              {node.first_seen ? (
+                <StatusLine label="First Seen" value={formatDate(node.first_seen)} />
+              ) : null}
+              {node.last_seen ? (
+                <StatusLine label="Last Seen" value={formatDate(node.last_seen)} />
+              ) : null}
+              {node.source_name ? <StatusLine label="Publisher" value={node.source_name} /> : null}
+            </div>
+          </div>
+        ) : null}
+      </div>
+
+      {/* Inspector Bottom Actions */}
+      {node && !edge && (
+        <div className="pt-4 border-t border-line mt-4 flex flex-wrap gap-2">
+          {node.url ? (
+            <a
+              href={node.url}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex items-center gap-1.5 rounded bg-cyanx px-3 py-1.5 text-xs font-bold text-ink hover:bg-sky-400 transition"
+            >
+              <ExternalLink className="h-3.5 w-3.5" />
+              Open Evidence
+            </a>
+          ) : null}
+          {node.kind === "related_entity" && node.type !== "grouped" && (
+            <button
+              onClick={() => onFocusEntity(node)}
+              className="rounded border border-line bg-ink px-3 py-1.5 text-xs font-bold text-slate-200 hover:bg-panel2 transition"
+            >
+              Focus Entity
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function layoutGraphNodes(nodes: GraphNode[], width: number, height: number) {
+  const layers: Record<string, GraphNode[]> = {
+    source: [],
+    document: [],
+    selected_entity: [],
+    related_entity: [],
+  };
+  nodes.forEach((node) => {
+    const key = node.kind ?? "related_entity";
+    if (layers[key]) layers[key].push(node);
+    else layers.related_entity.push(node);
+  });
+  const positions: Record<string, { x: number; y: number }> = {};
+  distributeLayer(layers.source, 148, height, positions);
+  distributeLayer(layers.document, 493, height, positions);
+  distributeLayer(layers.selected_entity, 842, height, positions, height / 2);
+  distributeLayer(layers.related_entity, width - 210, height, positions);
+  return positions;
+}
+
+function distributeLayer(
+  nodes: GraphNode[],
+  x: number,
+  height: number,
+  positions: Record<string, { x: number; y: number }>,
+  fixedY?: number
+) {
+  if (!nodes.length) return;
+  nodes.forEach((node, index) => {
+    const y = fixedY ?? ((index + 1) * height) / (nodes.length + 1);
+    positions[node.id] = { x, y: Math.max(58, Math.min(height - 58, y)) };
+  });
+}
+
+function nodeEdgePoint(node: GraphNode, position: { x: number; y: number }, direction: number) {
+  return { x: position.x + direction * nodeHorizontalExtent(node), y: position.y };
+}
+
+function nodeHorizontalExtent(node: GraphNode) {
+  if (node.kind === "document") return 132;
+  if (node.kind === "related_entity") return 98;
+  if (node.kind === "selected_entity") return 48;
+  return 36;
+}
+
+function relationshipPath(source: { x: number; y: number }, target: { x: number; y: number }) {
+  const mid = source.x + (target.x - source.x) * 0.5;
+  return `M ${source.x} ${source.y} C ${mid} ${source.y}, ${mid} ${target.y}, ${target.x} ${target.y}`;
+}
+
+function relationshipLabelPosition(source: { x: number; y: number }, target: { x: number; y: number }) {
+  return { x: source.x + (target.x - source.x) * 0.52, y: source.y + (target.y - source.y) * 0.48 - 10 };
+}
+
+function edgeKey(edge: GraphEdge) {
+  return edge.id ?? `${edge.source}->${edge.target}:${edge.label}`;
+}
+
+function graphNodeColor(node: GraphNode) {
+  if (node.kind === "source") return "#0f766e"; // teal
+  if (node.kind === "document") {
+    if (node.entity_type === "advisory") return "#dc2626"; // red
+    return "#0369a1"; // blue
+  }
+  if (node.kind === "selected_entity") return "#dc2626"; // red
+  if (node.type === "grouped") return "#64748b"; // grey for collapsed group
+  if (node.entity_type === "cve") return "#e11d48"; // rose for CVEs
+  if (node.entity_type === "malware_family") return "#7c3aed"; // violet for malware
+  if (node.entity_type === "brand") return "#db2777"; // pink for brand
+  if (node.entity_type === "package") return "#0284c7"; // light blue
+  if (node.entity_type === "vendor" || node.entity_type === "product") return "#d97706"; // amber
+  return "#b45309"; // brown/orange
+}
+
+function graphNodeTone(node: GraphNode): "slate" | "blue" | "green" | "amber" | "red" {
+  if (node.kind === "source") return "green";
+  if (node.kind === "document") return "blue";
+  if (node.kind === "selected_entity") return "red";
+  if (node.risk_level === "critical") return "red";
+  if (node.risk_level === "high") return "amber";
+  if (node.risk_level === "medium") return "blue";
+  return "slate";
+}
+
+function nodeIconText(node: GraphNode) {
+  if (node.kind === "source") return "SRC";
+  if (node.kind === "selected_entity") return "FOC";
+  if (node.type === "grouped") return "GRP";
+  return (node.entity_type ?? node.type ?? "ENT").slice(0, 3).toUpperCase();
+}
+
+function formatGraphType(value?: string) {
+  if (!value) return "entity";
+  return value.replace(/_/g, " ");
+}
+
+function relationshipTone(relationship?: string): "slate" | "blue" | "green" | "amber" | "red" {
+  const rel = (relationship ?? "").toUpperCase();
+  if (["PUBLISHED", "PUBLISHES"].includes(rel)) return "green";
+  if (["ASSERTS", "MENTIONS", "HAS_CVE"].includes(rel)) return "blue";
+  if (["CO_OCCURS", "AFFECTS_PACKAGE", "AFFECTS_VENDOR", "AFFECTS_PRODUCT", "HAS_SEVERITY"].includes(rel)) return "amber";
+  if (["OBSERVED_PHISHING_URL", "OBSERVED_MALWARE_URL", "OBSERVED_IOC", "HOSTED_ON_IP", "TARGETS_BRAND", "ASSOCIATED_WITH_MALWARE"].includes(rel)) return "red";
+  return "slate";
+}
+
+function relationshipDescription(edge: GraphEdge) {
+  if (edge.relationship === "PUBLISHED") return "A public source published an evidence document.";
+  if (edge.relationship === "MENTIONS") return "An evidence document mentions an extracted security entity.";
+  if (edge.relationship === "CO_OCCURS") return "Two entities appear together in one or more evidence documents.";
+  return edge.label;
+}
+
+function PriorityRow({ finding, compact = false }: { finding: PriorityFinding; compact?: boolean }) {
+  return (
+    <div className="rounded-xl border border-line bg-ink/40 p-4 shadow-sm hover:border-cyanx/30">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <PriorityBadge priority={finding.priority} />
+            <Badge>{finding.entity_type}</Badge>
+            <Badge tone={finding.confirmation.includes("corroborated") ? "green" : finding.confirmation.includes("social only") ? "amber" : "blue"}>
+              {finding.confirmation}
+            </Badge>
+            <Badge tone={verdictTone(finding.analyst_verdict)}>{finding.analyst_verdict}</Badge>
+          </div>
+          <div className="mt-2 truncate text-lg font-semibold text-slate-100">{finding.value}</div>
+          <div className="mt-2 text-xs text-slate-500">Reliability: {finding.source_reliability}</div>
+        </div>
+        <div className="text-right">
+          <div className="text-2xl font-semibold text-white">{finding.score}</div>
+          <div className="text-xs text-slate-400">{finding.mentions} mentions · {finding.source_count} sources</div>
+        </div>
+      </div>
+      {!compact ? <p className="mt-3 text-sm text-slate-400">{finding.rationale[0]}</p> : null}
+    </div>
+  );
+}
+
+function DecisionMetric({ label, value, tone }: { label: string; value: string; tone: "slate" | "blue" | "green" | "amber" | "red" }) {
+  return (
+    <div>
+      <div className="mb-1 text-xs uppercase tracking-wide text-slate-500">{label}</div>
+      <Badge tone={tone}>{value}</Badge>
+    </div>
+  );
+}
+
+function Metric({ label, value, icon: Icon, tone = "blue" }: { label: string; value: number; icon: ElementType; tone?: "blue" | "red" | "amber" | "green" }) {
+  const color =
+    tone === "red"
+      ? "text-danger bg-danger/10 border-danger/30"
+      : tone === "amber"
+        ? "text-amberx bg-amberx/10 border-amberx/30"
+        : tone === "green"
+          ? "text-tealt bg-tealt/10 border-tealt/30"
+          : "text-cyanx bg-cyanx/10 border-cyanx/30";
+  return (
+    <div className="rounded-xl border border-line bg-panel p-4 shadow-glow">
+      <div className="flex items-center justify-between">
+        <div className={`grid h-10 w-10 place-items-center rounded-lg border ${color}`}>
+          <Icon className="h-5 w-5" />
+        </div>
+        <div className="text-right text-3xl font-semibold">{value}</div>
+      </div>
+      <div className="mt-4 text-sm text-slate-400">{label}</div>
+    </div>
+  );
+}
+
+function Panel({ title, children, className = "" }: { title: string; children: ReactNode; className?: string }) {
+  return (
+    <section className={`rounded-xl border border-line bg-panel/95 p-4 shadow-glow ${className}`}>
+      <h2 className="mb-4 text-base font-semibold text-slate-100">{title}</h2>
+      {children}
+    </section>
+  );
+}
+
+function MiniPanel({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <div className="rounded-xl border border-line bg-ink/30 p-4">
+      <h3 className="mb-3 text-sm font-semibold text-slate-200">{title}</h3>
+      {children}
+    </div>
+  );
+}
+
+function Badge({ children, tone = "slate" }: { children: ReactNode; tone?: "slate" | "blue" | "green" | "amber" | "red" }) {
+  const styles = {
+    slate: "border-slate-300 bg-slate-100 text-slate-700",
+    blue: "border-cyanx/25 bg-cyanx/10 text-cyanx",
+    green: "border-tealt/25 bg-tealt/10 text-tealt",
+    amber: "border-amberx/25 bg-amberx/10 text-amberx",
+    red: "border-danger/25 bg-danger/10 text-danger",
+  };
+  return <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${styles[tone]}`}>{children}</span>;
+}
+
+function PriorityBadge({ priority }: { priority: string }) {
+  const styles: Record<string, string> = {
+    critical: "border-danger/30 bg-danger/10 text-danger",
+    high: "border-amberx/30 bg-amberx/10 text-amberx",
+    medium: "border-cyanx/30 bg-cyanx/10 text-cyanx",
+    low: "border-slate-300 bg-slate-100 text-slate-700",
+  };
+  return <span className={`rounded-full border px-2 py-0.5 text-xs font-semibold uppercase ${styles[priority] ?? styles.low}`}>{priority}</span>;
+}
+
+function SectionList({ title, items }: { title?: string; items: string[] }) {
+  return (
+    <div>
+      {title ? <h3 className="mb-2 text-sm font-semibold text-slate-200">{title}</h3> : null}
+      <ul className="space-y-2 text-sm text-slate-400">
+        {items.map((item) => <li key={item}>- {item}</li>)}
+      </ul>
+    </div>
+  );
+}
+
+function verdictTone(verdict: string): "slate" | "blue" | "green" | "amber" | "red" {
+  if (verdict === "Patch/Remediate" || verdict === "Escalate") return "red";
+  if (verdict === "Investigate") return "amber";
+  if (verdict === "Monitor") return "blue";
+  return "slate";
+}
+
+function reliabilityTone(label: string): "slate" | "blue" | "green" | "amber" | "red" {
+  if (label.startsWith("high")) return "green";
+  if (label === "medium") return "blue";
+  if (label === "community") return "amber";
+  if (label === "low") return "amber";
+  return "slate";
+}
+
+function sourceTypeTone(sourceType: string): "slate" | "blue" | "green" | "amber" | "red" {
+  if (sourceType === "structured_feed" || sourceType === "cert" || sourceType === "vendor" || sourceType === "threat_feed" || sourceType === "research") return "green";
+  if (sourceType === "news" || sourceType === "rss") return "blue";
+  if (sourceType === "social") return "amber";
+  return "slate";
+}
+
+function postureTone(posture: string): "slate" | "blue" | "green" | "amber" | "red" {
+  if (posture === "excellent" || posture === "strong") return "green";
+  if (posture === "developing") return "amber";
+  if (posture === "thin" || posture === "empty") return "red";
+  return "blue";
+}
+
+function percentage(value: number) {
+  return `${Math.round(value * 100)}%`;
+}
+
+function ExportButton({ icon: Icon, label, onClick }: { icon: ElementType; label: string; onClick: () => void }) {
+  return (
+    <button onClick={onClick} className="flex items-center gap-3 rounded-xl border border-line bg-ink/40 p-4 text-left hover:border-cyanx/40 hover:bg-cyanx/5">
+      <Icon className="h-5 w-5 text-cyanx" />
+      <span className="font-medium">{label}</span>
+    </button>
+  );
+}
+
+function download(name: string, content: string, type: string) {
+  const blob = new Blob([content], { type });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = name;
+  anchor.click();
+  URL.revokeObjectURL(url);
+}
+
+function formatDate(value: string | null) {
+  if (!value) return "unknown";
+  return new Date(value).toLocaleDateString();
+}
+
+function truncate(value: string, length: number) {
+  return value.length > length ? `${value.slice(0, length - 1)}...` : value;
+}
+
+function FloatingChatWidget({
+  isOpen,
+  onToggle,
+  messages,
+  input,
+  setInput,
+  loading,
+  error,
+  citations,
+  caveats,
+  relatedEntities,
+  llmConfigured,
+  onSendPrompt,
+  onClearChat,
+}: {
+  isOpen: boolean;
+  onToggle: () => void;
+  messages: Array<{ role: "user" | "assistant"; content: string }>;
+  input: string;
+  setInput: (v: string) => void;
+  loading: boolean;
+  error: string;
+  citations: Array<{ document_id: number; title: string; source_name: string; url: string }>;
+  caveats: string[];
+  relatedEntities: Array<{ type: string; value: string }>;
+  llmConfigured: boolean;
+  onSendPrompt: (text: string) => void;
+  onClearChat: () => void;
+}) {
+  const SUGGESTED_PROMPTS = [
+    "What are the top critical threats?",
+    "Summarize phishing activity.",
+    "Which CVEs have the highest priority?"
+  ];
+
+  const renderMessageContent = (content: string) => {
+    const regex = /(\*\*.*?\*\*)/g;
+    const parts = content.split(regex);
+    return parts.map((part, idx) => {
+      if (part.startsWith("**") && part.endsWith("**")) {
+        return (
+          <strong key={idx} className="font-bold text-slate-100">
+            {part.slice(2, -2)}
+          </strong>
+        );
+      }
+      return part;
+    });
+  };
+
+  return (
+    <div className="fixed bottom-5 right-5 z-50 flex flex-col items-end">
+      {/* Collapsed Chat Pill */}
+      <button
+        onClick={onToggle}
+        className="flex h-14 w-14 items-center justify-center rounded-full bg-cyanx text-ink shadow-lg hover:bg-sky-400 transition transform hover:scale-105 active:scale-95"
+        title="Open Analyst Copilot"
+      >
+        <Brain className="h-6 w-6" />
+      </button>
+
+      {/* Expanded chat panel */}
+      {isOpen && (
+        <div className="w-[calc(100vw-32px)] sm:w-[640px] fixed bottom-20 right-4 sm:right-5 flex h-[75vh] min-h-[500px] max-h-[85vh] flex-col rounded-xl border border-line bg-panel shadow-glow overflow-hidden">
+          {/* Header */}
+          <div className="flex items-center justify-between border-b border-line bg-panel2 px-4 py-3">
+            <div className="flex items-center gap-2">
+              <Brain className="h-5 w-5 text-cyanx" />
+              <span className="font-semibold text-sm text-slate-200">Analyst Copilot</span>
+            </div>
+            <div className="flex items-center gap-2">
+              {messages.length > 0 && (
+                <button
+                  onClick={onClearChat}
+                  className="text-[10px] px-2 py-0.5 rounded border border-line bg-ink/30 hover:bg-ink hover:text-white transition"
+                >
+                  Clear
+                </button>
+              )}
+              <button
+                onClick={onToggle}
+                className="text-slate-400 hover:text-slate-200 text-xs font-semibold px-1"
+              >
+                ✕
+              </button>
+            </div>
+          </div>
+
+          {/* Warning state if not configured */}
+          {!llmConfigured && (
+            <div className="bg-danger/10 border-b border-danger/20 p-3 text-[11px] text-danger">
+              <div className="font-bold">LLM Chat Disabled</div>
+              Configure LLM_PROVIDER & LLM_API_KEY in .env.
+            </div>
+          )}
+
+          {/* Scrollable Chat Area */}
+          <div className="flex-1 overflow-y-auto p-4 space-y-4 scrollbar-thin">
+            {error && (
+              <div className="rounded border border-amberx/20 bg-amberx/10 p-2 text-xs text-amber-200">
+                {error}
+              </div>
+            )}
+
+            {messages.length === 0 ? (
+              <div className="text-center py-6 text-slate-400">
+                <Brain className="h-8 w-8 text-cyanx/40 mx-auto mb-2" />
+                <h4 className="text-xs font-semibold text-slate-200 mb-1">Local CTI Assistant</h4>
+                <p className="text-[11px] leading-relaxed max-w-[280px] mx-auto">
+                  Ask me about local CVEs, threat feeds, or OSINT coverage gaps.
+                </p>
+                <div className="mt-4 flex flex-col gap-1.5">
+                  {SUGGESTED_PROMPTS.map((prompt) => (
+                    <button
+                      key={prompt}
+                      onClick={() => onSendPrompt(prompt)}
+                      disabled={!llmConfigured || loading}
+                      className="rounded border border-line bg-ink/30 px-3 py-1.5 text-[10px] text-slate-300 hover:bg-cyanx/10 hover:border-cyanx/30 transition text-left"
+                    >
+                      {prompt}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ) : (
+              messages.map((msg, i) => (
+                <div
+                  key={i}
+                  className={`flex flex-col max-w-[85%] rounded-lg p-2.5 border text-xs leading-relaxed ${
+                    msg.role === "user"
+                      ? "bg-cyanx/10 border-cyanx/20 self-end text-slate-100"
+                      : "bg-ink/30 border-line self-start text-slate-200"
+                  }`}
+                >
+                  <div className="text-[9px] font-bold uppercase tracking-wider text-slate-500 mb-1">
+                    {msg.role === "user" ? "Analyst" : "Copilot"}
+                  </div>
+                  <div className="whitespace-pre-wrap">{renderMessageContent(msg.content)}</div>
+                  {msg.role === "assistant" && (
+                    <div className="mt-2.5">
+                      <CopilotAnimation content={msg.content} />
+                    </div>
+                  )}
+                </div>
+              ))
+            )}
+
+            {loading && (
+              <div className="flex flex-col max-w-[85%] rounded-lg p-2.5 border bg-ink/30 border-line self-start text-slate-200 text-xs">
+                <div className="text-[9px] font-bold uppercase tracking-wider text-slate-500 mb-1">
+                  Copilot
+                </div>
+                <div className="flex items-center gap-1.5 text-slate-400">
+                  <span className="h-1.5 w-1.5 rounded-full bg-cyanx animate-pulse"></span>
+                  Thinking...
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Context Info (Citations, Caveats, Related Entities) */}
+          {(citations.length > 0 || caveats.length > 0 || relatedEntities.length > 0) && (
+            <div className="border-t border-line bg-panel2/50 p-3 space-y-2 text-[10px] max-h-[15vh] overflow-y-auto scrollbar-thin">
+              {citations.length > 0 && (
+                <div>
+                  <span className="font-bold text-slate-300 uppercase">Citations:</span>
+                  <div className="mt-1 space-y-1">
+                    {citations.map((c, idx) => (
+                      <a
+                        key={idx}
+                        href={c.url}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="block text-cyanx hover:underline truncate"
+                      >
+                        [{idx + 1}] {c.title} ({c.source_name})
+                      </a>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {caveats.length > 0 && (
+                <div>
+                  <span className="font-bold text-amberx uppercase">Caveats:</span>
+                  <ul className="list-disc pl-3 text-slate-400 space-y-0.5 mt-0.5">
+                    {caveats.map((c, idx) => (
+                      <li key={idx}>{c}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              {relatedEntities.length > 0 && (
+                <div>
+                  <span className="font-bold text-slate-300 uppercase">Related Entities:</span>
+                  <div className="flex flex-wrap gap-1 mt-1">
+                    {relatedEntities.map((e, idx) => (
+                      <span key={idx} className="bg-ink/50 border border-line rounded px-1 text-slate-300">
+                        {e.type}: {e.value}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Form Input */}
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (input.trim() && !loading && llmConfigured) {
+                onSendPrompt(input);
+              }
+            }}
+            className="flex items-center gap-1.5 border-t border-line p-2 bg-panel2"
+          >
+            <input
+              type="text"
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              disabled={loading || !llmConfigured}
+              placeholder={llmConfigured ? "Ask Analyst Copilot..." : "Chat disabled"}
+              className="flex-1 rounded border border-line bg-ink/50 px-2.5 py-1.5 text-xs text-slate-100 outline-none focus:border-cyanx/50 transition disabled:opacity-50"
+            />
+            <button
+              type="submit"
+              disabled={loading || !input.trim() || !llmConfigured}
+              className="rounded bg-cyanx px-3 py-1.5 text-xs font-semibold text-ink hover:bg-sky-500 transition disabled:opacity-40"
+            >
+              Send
+            </button>
+          </form>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function EnrichmentSummary({
+  detail,
+  onSelect,
+  entities,
+}: {
+  detail: EntityDetail;
+  onSelect?: (entity: EntitySummary) => void;
+  entities?: EntitySummary[];
+}) {
+  const enrichments = detail.enrichments || [];
+
+  const nvd = enrichments.find(e => e.provider === "nvd");
+  const epss = enrichments.find(e => e.provider === "first_epss");
+  const mitre = enrichments.find(e => e.provider === "mitre_attack");
+
+  const relatedCVEs = (detail.co_occurring || []).filter(
+    (item) => item.type === "cve" && item.enrichments && item.enrichments.length > 0
+  );
+
+  const hasDirectEnrichment = nvd || epss || mitre;
+  const isVendorProductDomain = ["vendor", "product", "domain"].includes(detail.type);
+
+  return (
+    <div className="space-y-4 text-slate-100">
+      {/* Explanation Banner */}
+      <div className="rounded-lg border border-cyanx/20 bg-cyanx/5 p-3 text-xs leading-relaxed text-slate-300">
+        <span className="font-semibold text-cyanx">About Enrichment:</span> Enrichment integrates context from external sources like the National Vulnerability Database (NVD) for CVE details, FIRST EPSS for exploit likelihood, and MITRE ATT&CK for tactical alignment.
+      </div>
+
+      {/* Provider Cards */}
+      {hasDirectEnrichment ? (
+        <div className="grid gap-4 sm:grid-cols-1 md:grid-cols-2">
+          {nvd && (
+            <div className="rounded-xl border border-line bg-panel p-4 shadow-sm space-y-3">
+              <div className="flex items-center justify-between border-b border-line pb-2">
+                <span className="text-xs font-bold text-slate-400 tracking-wider">NVD ENRICHMENT</span>
+                <Badge tone={nvd.payload.severity === "CRITICAL" || nvd.payload.severity === "HIGH" ? "red" : "amber"}>
+                  {String(nvd.payload.severity ?? "UNKNOWN")}
+                </Badge>
+              </div>
+              <div className="space-y-2">
+                {nvd.payload.cvss_score !== undefined && (
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-semibold text-slate-200">CVSS v3 Score:</span>
+                    <span className="text-base font-bold text-white bg-red-600/10 px-2 py-0.5 rounded border border-red-500/20">
+                      {String(nvd.payload.cvss_score)}
+                    </span>
+                  </div>
+                )}
+                {!!nvd.payload.description && (
+                  <p className="text-xs leading-relaxed text-slate-400">
+                    {String(nvd.payload.description)}
+                  </p>
+                )}
+                {Array.isArray(nvd.payload.references) && nvd.payload.references.length > 0 && (
+                  <div className="pt-2 border-t border-line/50">
+                    <span className="text-[10px] font-bold text-slate-400 block mb-1.5 uppercase">References:</span>
+                    <div className="flex flex-wrap gap-1.5">
+                      {nvd.payload.references.slice(0, 3).map((ref: any, idx: number) => (
+                        <a
+                          key={idx}
+                          href={String(ref)}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="inline-flex items-center gap-1 px-2 py-1 rounded bg-ink/40 text-[10px] text-cyanx hover:bg-cyanx/10 hover:text-white transition max-w-[200px] truncate"
+                        >
+                          <ExternalLink className="h-3 w-3" />
+                          Advisory {idx + 1}
+                        </a>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {epss && (
+            <div className="rounded-xl border border-line bg-panel p-4 shadow-sm space-y-3">
+              <div className="flex items-center justify-between border-b border-line pb-2">
+                <span className="text-xs font-bold text-slate-400 tracking-wider">FIRST EPSS EXPLOIT LIKELIHOOD</span>
+                <Badge tone="blue">EPSS v3</Badge>
+              </div>
+              <div className="space-y-3">
+                <div className="grid grid-cols-2 gap-2 text-center">
+                  <div className="bg-ink/30 border border-line rounded-lg p-2">
+                    <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wide">Probability</div>
+                    <div className="text-lg font-bold text-white mt-1">
+                      {epss.payload.epss !== undefined ? `${(parseFloat(String(epss.payload.epss)) * 100).toFixed(2)}%` : "N/A"}
+                    </div>
+                  </div>
+                  <div className="bg-ink/30 border border-line rounded-lg p-2">
+                    <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wide">Percentile</div>
+                    <div className="text-lg font-bold text-white mt-1">
+                      {epss.payload.percentile !== undefined ? `${(parseFloat(String(epss.payload.percentile)) * 100).toFixed(2)}%` : "N/A"}
+                    </div>
+                  </div>
+                </div>
+                {!!epss.payload.date && (
+                  <div className="text-[10px] text-slate-500 text-right">
+                    As of: {String(epss.payload.date)}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {mitre && (
+            <div className="rounded-xl border border-line bg-panel p-4 shadow-sm space-y-3 md:col-span-2">
+              <div className="flex items-center justify-between border-b border-line pb-2">
+                <span className="text-xs font-bold text-slate-400 tracking-wider">MITRE ATT&CK TECHNIQUE</span>
+                <Badge tone="green">{String(mitre.payload.tactic ?? "Tactic Unknown")}</Badge>
+              </div>
+              <div className="space-y-2">
+                <h4 className="text-sm font-bold text-white">
+                  {String(mitre.payload.name ?? detail.value)}
+                </h4>
+                {!!mitre.payload.description && (
+                  <p className="text-xs leading-relaxed text-slate-400">
+                    {String(mitre.payload.description)}
+                  </p>
+                )}
+                {!!mitre.payload.url && (
+                  <a
+                    href={String(mitre.payload.url)}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center gap-1.5 text-xs text-cyanx hover:underline"
+                  >
+                    <ExternalLink className="h-3.5 w-3.5" />
+                    View MITRE ATT&CK Wiki
+                  </a>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+      ) : (
+        <div className="rounded-xl border border-dashed border-line bg-ink/10 p-5 text-center text-slate-400">
+          <AlertTriangle className="h-6 w-6 text-slate-500 mx-auto mb-2" />
+          <p className="text-xs leading-relaxed max-w-md mx-auto">
+            No direct enrichment for this entity. Enrichment is currently available for CVEs and ATT&CK techniques.
+            Select a CVE such as <span className="font-semibold text-slate-300">CVE-2024-3400</span> or <span className="font-semibold text-slate-300">CVE-2023-34362</span> to view NVD/EPSS context.
+          </p>
+        </div>
+      )}
+
+      {/* Related Enriched CVEs for Vendor/Product/Domain */}
+      {isVendorProductDomain && (
+        <div className="border-t border-line pt-4 space-y-3">
+          <h4 className="text-xs font-bold text-slate-400 tracking-wider uppercase">
+            Related Enriched CVEs ({relatedCVEs.length})
+          </h4>
+          {relatedCVEs.length > 0 ? (
+            <div className="grid gap-3 sm:grid-cols-2">
+              {relatedCVEs.map((cve) => {
+                const cveNvd = cve.enrichments?.find(e => e.provider === "nvd");
+                const cveEpss = cve.enrichments?.find(e => e.provider === "first_epss");
+                return (
+                  <button
+                    key={cve.value}
+                    onClick={() => {
+                      if (onSelect) {
+                        const existing = entities?.find((item) => item.type === "cve" && item.value === cve.value);
+                        onSelect(existing ?? { type: "cve", value: cve.value, mentions: cve.shared_documents });
+                      }
+                    }}
+                    className="w-full text-left rounded-lg border border-line bg-panel2/40 p-3 space-y-2 hover:border-cyanx/50 hover:bg-cyanx/5 transition"
+                  >
+                    <div className="flex items-center justify-between">
+                      <span className="font-semibold text-slate-200 text-xs">{cve.value}</span>
+                      <Badge tone={cveNvd?.payload.severity === "CRITICAL" ? "red" : "amber"}>
+                        {String(cveNvd?.payload.severity ?? "HIGH")}
+                      </Badge>
+                    </div>
+                    <div className="text-[10px] text-slate-400 space-y-1">
+                      {cveNvd?.payload.cvss_score !== undefined && (
+                        <div>CVSS score: <span className="font-semibold text-slate-200">{String(cveNvd.payload.cvss_score)}</span></div>
+                      )}
+                      {cveEpss?.payload.epss !== undefined && (
+                        <div>EPSS probability: <span className="font-semibold text-slate-200">{(parseFloat(String(cveEpss.payload.epss)) * 100).toFixed(2)}%</span></div>
+                      )}
+                      <div className="text-[9px] text-slate-500 italic mt-1">Co-mentioned across {cve.shared_documents} document(s)</div>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          ) : (
+            <p className="text-[11px] text-slate-500 italic">No co-mentioned CVEs have active enrichment records.</p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Copilot Custom Animations Component
+function CopilotAnimation({ content }: { content: string }) {
+  const text = content.toLowerCase();
+  
+  const isCve = text.includes("cve-") || text.includes("lỗ hổng") || text.includes("vulnerability") || text.includes("exploit");
+  const isPhishing = text.includes("phishing") || text.includes("lừa đảo") || text.includes("phish") || text.includes("url") || text.includes("domain");
+  const isSigma = text.includes("sigma") || text.includes("detection") || text.includes("rule") || text.includes("luật phát hiện");
+  const isThreat = text.includes("threat") || text.includes("mối đe dọa") || text.includes("critical") || text.includes("nguy cấp") || text.includes("radar") || text.includes("scan");
+
+  if (isCve) return <VulnerabilityFlowAnimation />;
+  if (isPhishing) return <PhishingNetworkAnimation />;
+  if (isSigma) return <SigmaEngineAnimation />;
+  if (isThreat) return <RadarScanAnimation />;
+  
+  return null;
+}
+
+function RadarScanAnimation() {
+  return (
+    <div className="w-full h-[120px] bg-slate-950/40 border border-teal-500/20 rounded-lg overflow-hidden flex items-center justify-center relative shadow-inner">
+      <style>{`
+        @keyframes radar-sweep {
+          from { transform: rotate(0deg); }
+          to { transform: rotate(360deg); }
+        }
+        @keyframes radar-pulse {
+          0%, 100% { transform: scale(1); opacity: 0.15; }
+          50% { transform: scale(1.6); opacity: 0.8; }
+        }
+        @keyframes scanline-y {
+          0% { top: 0%; }
+          50% { top: 100%; }
+          100% { top: 0%; }
+        }
+      `}</style>
+      {/* Grid Pattern */}
+      <div className="absolute inset-0 opacity-10 bg-[linear-gradient(to_right,#0f766e_1px,transparent_1px),linear-gradient(to_bottom,#0f766e_1px,transparent_1px)] bg-[size:14px_14px]"></div>
+      
+      {/* Scanning Line overlay */}
+      <div className="absolute left-0 w-full h-[2px] bg-cyan-500/40 shadow-[0_0_10px_#06b6d4] opacity-50" style={{ animation: "scanline-y 4s infinite linear" }}></div>
+
+      {/* Radar rings */}
+      <div className="w-24 h-24 rounded-full border border-teal-500/20 flex items-center justify-center relative">
+        <div className="w-16 h-16 rounded-full border border-teal-500/10 flex items-center justify-center">
+          <div className="w-8 h-8 rounded-full border border-teal-500/5"></div>
+        </div>
+        
+        {/* Sweep line */}
+        <div 
+          className="absolute w-12 h-[1px] bg-gradient-to-r from-transparent to-cyan-400 origin-left"
+          style={{ 
+            left: "50%", 
+            top: "50%", 
+            animation: "radar-sweep 3s infinite linear",
+            boxShadow: "0 0 8px #22d3ee" 
+          }}
+        ></div>
+        
+        {/* Pulsing targets */}
+        <div className="absolute top-4 left-6 w-1.5 h-1.5 rounded-full bg-red-500" style={{ animation: "radar-pulse 2s infinite ease-in-out" }}></div>
+        <div className="absolute bottom-6 right-6 w-1.5 h-1.5 rounded-full bg-amber-500" style={{ animation: "radar-pulse 2.5s infinite ease-in-out 0.5s" }}></div>
+        <div className="absolute top-10 right-4 w-1.5 h-1.5 rounded-full bg-cyan-400" style={{ animation: "radar-pulse 1.8s infinite ease-in-out 1s" }}></div>
+      </div>
+      <div className="absolute bottom-2 left-3 flex items-center gap-1.5 text-[9px] font-mono tracking-widest text-slate-400">
+        <span className="h-1.5 w-1.5 rounded-full bg-teal-500 animate-ping"></span>
+        COPILOT LIVE FEED MONITORING
+      </div>
+    </div>
+  );
+}
+
+function VulnerabilityFlowAnimation() {
+  return (
+    <div className="w-full h-[120px] bg-slate-950/40 border border-red-500/20 rounded-lg overflow-hidden flex flex-col justify-center px-4 relative shadow-inner">
+      <style>{`
+        @keyframes laser-flow {
+          0% { stroke-dashoffset: 24; }
+          100% { stroke-dashoffset: 0; }
+        }
+        @keyframes node-pulse-red {
+          0%, 100% { box-shadow: 0 0 4px #ef4444; transform: scale(1); }
+          50% { box-shadow: 0 0 16px #ef4444; transform: scale(1.15); }
+        }
+        @keyframes node-pulse-blue {
+          0%, 100% { box-shadow: 0 0 4px #3b82f6; transform: scale(1); }
+          50% { box-shadow: 0 0 16px #3b82f6; transform: scale(1.15); }
+        }
+        @keyframes node-pulse-green {
+          0%, 100% { box-shadow: 0 0 4px #10b981; transform: scale(1); }
+          50% { box-shadow: 0 0 16px #10b981; transform: scale(1.15); }
+        }
+      `}</style>
+      <div className="flex justify-between items-center relative z-10">
+        {/* Node 1 */}
+        <div className="flex flex-col items-center gap-1">
+          <div className="w-8 h-8 rounded-lg bg-red-950/80 border border-red-500/50 flex items-center justify-center text-red-400 font-bold" style={{ animation: "node-pulse-red 2s infinite ease-in-out" }}>
+            CVE
+          </div>
+          <span className="text-[8px] font-mono text-slate-400">EXPLOIT</span>
+        </div>
+
+        {/* Connector Line 1 */}
+        <div className="flex-1 h-[2px] mx-2 relative">
+          <svg className="w-full h-full overflow-visible">
+            <line 
+              x1="0" y1="1" x2="100%" y2="1" 
+              stroke="#ef4444" 
+              strokeWidth="2" 
+              strokeDasharray="6 6"
+              style={{ animation: "laser-flow 1.5s infinite linear" }}
+            />
+          </svg>
+        </div>
+
+        {/* Node 2 */}
+        <div className="flex flex-col items-center gap-1">
+          <div className="w-8 h-8 rounded-lg bg-blue-950/80 border border-blue-500/50 flex items-center justify-center text-blue-400 font-bold" style={{ animation: "node-pulse-blue 2s infinite ease-in-out 0.6s" }}>
+            SYS
+          </div>
+          <span className="text-[8px] font-mono text-slate-400">AFFECTED</span>
+        </div>
+
+        {/* Connector Line 2 */}
+        <div className="flex-1 h-[2px] mx-2 relative">
+          <svg className="w-full h-full overflow-visible">
+            <line 
+              x1="0" y1="1" x2="100%" y2="1" 
+              stroke="#10b981" 
+              strokeWidth="2" 
+              strokeDasharray="6 6"
+              style={{ animation: "laser-flow 1s infinite linear" }}
+            />
+          </svg>
+        </div>
+
+        {/* Node 3 */}
+        <div className="flex flex-col items-center gap-1">
+          <div className="w-8 h-8 rounded-lg bg-emerald-950/80 border border-emerald-500/50 flex items-center justify-center text-emerald-400 font-bold" style={{ animation: "node-pulse-green 2s infinite ease-in-out 1.2s" }}>
+            SEC
+          </div>
+          <span className="text-[8px] font-mono text-slate-400">PATCHED</span>
+        </div>
+      </div>
+      <div className="absolute top-2 right-3 text-[8px] font-mono text-slate-400 tracking-wider">
+        VULNERABILITY MITIGATION TRACKER
+      </div>
+    </div>
+  );
+}
+
+function PhishingNetworkAnimation() {
+  return (
+    <div className="w-full h-[120px] bg-slate-950/40 border border-sky-500/20 rounded-lg p-3 overflow-hidden flex flex-col justify-center relative shadow-inner">
+      <style>{`
+        @keyframes flow-pulse {
+          0% { stroke-dashoffset: 0; }
+          100% { stroke-dashoffset: -30; }
+        }
+        @keyframes icon-glow {
+          0%, 100% { opacity: 0.6; }
+          50% { opacity: 1; filter: drop-shadow(0 0 6px #0ea5e9); }
+        }
+      `}</style>
+      <div className="absolute inset-0 opacity-5 bg-[radial-gradient(#0ea5e9_1px,transparent_1px)] bg-[size:10px_10px]"></div>
+      
+      <div className="flex justify-around items-center h-full relative z-10">
+        <div className="flex flex-col items-center gap-1">
+          <div className="p-2 rounded-full bg-slate-900 border border-slate-700/50 text-slate-400" style={{ animation: "icon-glow 2s infinite ease-in-out" }}>
+            <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+            </svg>
+          </div>
+          <span className="text-[8px] font-mono text-slate-500">Email Source</span>
+        </div>
+
+        <svg className="w-12 h-6 overflow-visible">
+          <path d="M0,12 C15,2 30,2 48,12" fill="none" stroke="#38bdf8" strokeWidth="1.5" strokeDasharray="4 4" style={{ animation: "flow-pulse 1.2s infinite linear" }} />
+        </svg>
+
+        <div className="flex flex-col items-center gap-1">
+          <div className="p-2 rounded-full bg-sky-950/80 border border-sky-500/50 text-sky-400" style={{ animation: "icon-glow 2s infinite ease-in-out 0.4s" }}>
+            <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 019-9" />
+            </svg>
+          </div>
+          <span className="text-[8px] font-mono text-slate-500">Fake Domain</span>
+        </div>
+
+        <svg className="w-12 h-6 overflow-visible">
+          <path d="M0,12 C15,22 30,22 48,12" fill="none" stroke="#f43f5e" strokeWidth="1.5" strokeDasharray="4 4" style={{ animation: "flow-pulse 1s infinite linear" }} />
+        </svg>
+
+        <div className="flex flex-col items-center gap-1">
+          <div className="p-2 rounded-full bg-red-950/80 border border-red-500/50 text-red-400" style={{ animation: "icon-glow 2s infinite ease-in-out 0.8s" }}>
+            <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+            </svg>
+          </div>
+          <span className="text-[8px] font-mono text-slate-500">IP Blocklist</span>
+        </div>
+      </div>
+      <div className="absolute top-2 left-3 text-[8px] font-mono text-slate-400 tracking-wider">
+        PHISHING LINK CORRELATION ANALYZER
+      </div>
+    </div>
+  );
+}
+
+function SigmaEngineAnimation() {
+  return (
+    <div className="w-full h-[120px] bg-black/70 border border-amber-500/20 rounded-lg p-3 font-mono text-[9px] relative overflow-hidden flex flex-col justify-between shadow-inner">
+      <style>{`
+        @keyframes console-glow {
+          0%, 100% { opacity: 0.8; }
+          50% { opacity: 0.4; }
+        }
+      `}</style>
+      
+      {/* Laser line overlay */}
+      <div className="absolute inset-x-0 h-[1px] bg-amber-500/10 shadow-[0_0_12px_#f59e0b] opacity-25" style={{ top: "40%", animation: "console-glow 2s infinite" }}></div>
+      
+      <div className="space-y-1 z-10 text-amber-500/90 leading-tight">
+        <div>$ sigma-engine --test-rules</div>
+        <div className="text-slate-400">Loading logsource mappings... [OK]</div>
+        <div className="text-green-400">[MATCH] EventID: 1 (ProcessCreate) {"->"} rule: T1059.001</div>
+        <div className="text-red-400 animate-pulse">[ALERT] Suspicious PowerShell CommandLine detected</div>
+        <div>Generating hunting indicators... <span className="animate-ping">●</span></div>
+      </div>
+
+      <div className="flex items-center justify-between border-t border-amber-500/10 pt-1.5 text-[8px] text-slate-500">
+        <span>ENGINE STATUS: HUNTING</span>
+        <span>SIGMA MATCH V2.0</span>
+      </div>
+    </div>
+  );
+}
